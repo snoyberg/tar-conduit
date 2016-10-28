@@ -1,16 +1,22 @@
 {-# LANGUAGE BangPatterns #-}
+{-| This module is about stream-processing tar archives. It is currently
+not very well tested. See the documentation of 'withEntries' for an usage sample.
+-}
 module Data.Conduit.Tar
-    ( untar
+    ( -- * Basic functions
+      untar
     , withEntry
     , withEntries
+      -- * Helper functions
+    , headerFileType
+    , headerFilePath
+      -- * Types
     , Header (..)
     , TarChunk (..)
     , TarException (..)
     , Offset
     , Size
-    , headerFileType
     , FileType (..)
-    , headerFilePath
     ) where
 
 import Conduit
@@ -18,8 +24,8 @@ import Control.Exception (Exception, assert)
 import Control.Monad (unless)
 import Data.ByteString (ByteString)
 import Data.Typeable (Typeable)
-import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as S8
+import qualified Data.ByteString        as S
+import qualified Data.ByteString.Char8  as S8
 import qualified Data.ByteString.Unsafe as BU
 import System.Posix.Types (CMode)
 import Data.Word (Word8)
@@ -28,19 +34,19 @@ import Data.ByteString.Short (ShortByteString, toShort, fromShort)
 import Data.Monoid ((<>))
 
 data Header = Header
-    { headerOffset :: !Offset
-    , headerPayloadOffset :: !Offset
+    { headerOffset         :: !Offset
+    , headerPayloadOffset  :: !Offset
     , headerFileNameSuffix :: !ShortByteString
-    , headerFileMode :: !CMode
-    , headerOwnerId :: !Int
-    , headerGroupId :: !Int
-    , headerPayloadSize :: !Size
-    , headerTime :: !Int64
-    , headerLinkIndicator :: !Word8
-    , headerOwnerName :: !ShortByteString
-    , headerGroupName :: !ShortByteString
-    , headerDeviceMajor :: !Int
-    , headerDeviceMinor :: !Int
+    , headerFileMode       :: !CMode
+    , headerOwnerId        :: !Int
+    , headerGroupId        :: !Int
+    , headerPayloadSize    :: !Size
+    , headerTime           :: !Int64
+    , headerLinkIndicator  :: !Word8
+    , headerOwnerName      :: !ShortByteString
+    , headerGroupName      :: !ShortByteString
+    , headerDeviceMajor    :: !Int
+    , headerDeviceMinor    :: !Int
     , headerFileNamePrefix :: !ShortByteString
     }
     deriving Show
@@ -63,7 +69,7 @@ data FileType
 headerFileType :: Header -> FileType
 headerFileType h =
     case headerLinkIndicator h of
-        0 -> FTNormal
+        0  -> FTNormal
         48 -> FTNormal
         49 -> FTHardLink
         50 -> FTSymbolicLink
@@ -71,7 +77,7 @@ headerFileType h =
         52 -> FTBlockSpecial
         53 -> FTDirectory
         54 -> FTFifo
-        x -> FTOther x
+        x  -> FTOther x
 
 type Offset = Int
 type Size = Int
@@ -85,11 +91,11 @@ data TarChunk
 data TarException
     = NoMoreHeaders
     | UnexpectedPayload !Offset
-    | IncompleteHeader !Offset
+    | IncompleteHeader  !Offset
     | IncompletePayload !Offset !Size
-    | ShortTrailer !Offset
-    | BadTrailer !Offset
-    | InvalidHeader !Offset
+    | ShortTrailer      !Offset
+    | BadTrailer        !Offset
+    | InvalidHeader     !Offset
     deriving (Show, Typeable)
 instance Exception TarException
 
@@ -182,6 +188,7 @@ untar =
                 unless (S.null y) (leftover y)
                 payloads offset' size'
 
+-- | Process a single tar entry. See 'withEntries' for more details.
 withEntry :: MonadThrow m
           => (Header -> ConduitM ByteString o m r)
           -> ConduitM TarChunk o m r
@@ -203,6 +210,42 @@ withEntry inner = do
             Just (ChunkException e) -> throwM e
             Nothing -> return ()
 
+{-| This function handles each entry of the tar archive according to the
+behaviour of the function passed as first argument.
+
+Here is a full example function, that reads a compressed tar archive and for each entry that is a simple file, it prints its file path and SHA256 digest. Note that this function can throw exceptions!
+
+> import qualified Crypto.Hash.Conduit as CH
+> import qualified Data.Conduit.Tar    as CT
+> 
+> import Conduit
+> import Crypto.Hash (Digest, SHA256)
+> import Control.Monad (when)
+> import Data.Conduit.Zlib (ungzip)
+> import Data.ByteString (ByteString)
+> 
+> filedigests :: FilePath -> IO ()
+> filedigests fp = runConduitRes (  sourceFileBS fp          -- read the raw file
+>                                .| ungzip                   -- gunzip
+>                                .| CT.untar                 -- decode the tar archive
+>                                .| CT.withEntries hashentry -- process each file
+>                                .| printC                   -- print the results
+>                                )
+>     where
+>         hashentry :: Monad m => CT.Header -> Conduit ByteString m (FilePath, Digest SHA256)
+>         hashentry hdr = when (CT.headerFileType hdr == CT.FTNormal) $ do
+>             hash <- CH.sinkHash
+>             yield (CT.headerFilePath hdr, hash)
+
+The @hashentry@ function handles a single entry, based on its first 'Header' argument.
+In this example, a 'Consumer' is used to process the whole entry.
+
+Note that the benefits of stream processing are easily lost when working with a 'Consumer'. For example, the following implementation would have used an unbounded amount of memory:
+
+>         hashentry hdr = when (CT.headerFileType hdr == CT.FTNormal) $ do
+>             content <- mconcat <$> sinkList
+>             yield (CT.headerFilePath hdr, hash content)
+-}
 withEntries :: MonadThrow m
             => (Header -> ConduitM ByteString o m ())
             -> ConduitM TarChunk o m ()
