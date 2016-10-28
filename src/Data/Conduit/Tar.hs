@@ -58,7 +58,7 @@ data FileType
     | FTDirectory
     | FTFifo
     | FTOther !Word8
-    deriving Show
+    deriving (Show, Eq)
 
 headerFileType :: Header -> FileType
 headerFileType h =
