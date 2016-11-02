@@ -88,6 +88,10 @@ data TarChunk
     | ChunkException TarException
     deriving Show
 
+-- | This the the exception type that is used in this module.
+--
+-- More constructors are susceptible to be added without bumping the major
+-- version of this module.
 data TarException
     = NoMoreHeaders
     | UnexpectedPayload !Offset
