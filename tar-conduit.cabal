@@ -1,5 +1,5 @@
 name:                tar-conduit
-version:             0.1.0.0
+version:             0.1.0
 synopsis:            Parse tar files using conduit for streaming
 description:         Please see README.md
 homepage:            https://github.com/snoyberg/tar-conduit#readme
