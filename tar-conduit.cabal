@@ -6,7 +6,7 @@ homepage:            https://github.com/snoyberg/tar-conduit#readme
 license:             MIT
 license-file:        LICENSE
 author:              Michael Snoyman
-maintainer:          michael@snoyman.com
+maintainer:          michael@snoyman.com, bartavelle@gmail.com
 category:            Data Conduit
 build-type:          Simple
 extra-source-files:  README.md ChangeLog.md
