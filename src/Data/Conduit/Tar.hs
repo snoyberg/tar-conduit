@@ -100,12 +100,16 @@ data TarException
     | ShortTrailer      !Offset
     | BadTrailer        !Offset
     | InvalidHeader     !Offset
+    | BadChecksum       !Offset
     deriving (Show, Typeable)
 instance Exception TarException
 
 parseHeader :: Offset -> ByteString -> Either TarException Header
 parseHeader offset bs = assert (S.length bs == 512) $ do
-    let checksum = S.take 8 $ S.drop 148 bs
+    let checksumBytes = S.take 8 $ S.drop 148 bs
+        expectedChecksum = parseOctal checksumBytes
+        actualChecksum = bsum bs - bsum checksumBytes + 8 * 0x20
+    unless (actualChecksum == expectedChecksum) (Left (BadChecksum offset))
     return Header
         { headerOffset         = offset
         , headerPayloadOffset  = offset + 512
@@ -123,6 +127,9 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
         , headerFileNamePrefix = getShort 345 155
         }
   where
+    bsum :: ByteString -> Int
+    bsum = S.foldl' (\c n -> c + fromIntegral n) 0
+
     getShort off len = toShort $ S.takeWhile (/= 0) $ S.take len $ S.drop off bs
 
     getOctal off len = parseOctal $ S.take len $ S.drop off bs
