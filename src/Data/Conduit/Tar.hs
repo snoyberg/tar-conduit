@@ -1,4 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-| This module is about stream-processing tar archives. It is currently
 not very well tested. See the documentation of 'withEntries' for an usage sample.
 -}
@@ -32,6 +34,10 @@ import Data.Word (Word8)
 import Data.Int (Int64)
 import Data.ByteString.Short (ShortByteString, toShort, fromShort)
 import Data.Monoid ((<>))
+
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative ((<*))
+#endif
 
 data Header = Header
     { headerOffset         :: !Offset
