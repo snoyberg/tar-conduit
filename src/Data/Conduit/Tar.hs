@@ -114,7 +114,7 @@ parseHeader :: Offset -> ByteString -> Either TarException Header
 parseHeader offset bs = assert (S.length bs == 512) $ do
     let checksumBytes = S.take 8 $ S.drop 148 bs
         expectedChecksum = parseOctal checksumBytes
-        actualChecksum = bsum bs - bsum checksumBytes + 8 * 0x20
+        actualChecksum = bsum bs - bsum checksumBytes + 8 * space
     unless (actualChecksum == expectedChecksum) (Left (BadChecksum offset))
     return Header
         { headerOffset         = offset
@@ -143,7 +143,10 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
     parseOctal :: Integral i => ByteString -> i
     parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
                . S.takeWhile (\c -> zero <= c && c <= seven)
+               . S.dropWhile (== space)
 
+    space :: Integral i => i
+    space = 0x20
     zero = 48
     seven = 55
 
