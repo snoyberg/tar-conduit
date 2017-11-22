@@ -23,7 +23,7 @@ import Data.Word
 data FileType
     = FTNormal
     | FTHardLink
-    | FTSymbolicLink
+    | FTSymbolicLink !FilePath
     | FTCharacterSpecial
     | FTBlockSpecial
     | FTDirectory
@@ -34,9 +34,9 @@ data FileType
 
 data FileInfo = FileInfo
     { filePath      :: !FilePath -- ^ File path.
-    , fileUserID    :: !UserID  -- ^ Unix user id.
+    , fileUserId    :: !UserID  -- ^ Unix user id.
     , fileUserName  :: !String  -- ^ Unix user name.
-    , fileGroupID   :: !GroupID -- ^ Unix group id.
+    , fileGroupId   :: !GroupID -- ^ Unix group id.
     , fileGroupName :: !String  -- ^ Unix group name.
     , fileMode      :: !FileMode -- ^ Unix file permissions
     , fileSize      :: !FileOffset -- ^ File size

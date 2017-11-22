@@ -1,8 +1,8 @@
 {-# LANGUAGE CPP #-}
 module Data.Conduit.Tar.Unix
     ( getFileInfo
-    , Posix.readSymbolicLink
     , Dir.doesDirectoryExist
+    , Posix.createSymbolicLink
     ) where
 
 import qualified System.Directory as Dir
@@ -21,23 +21,25 @@ getFileInfo fp = do
         gid = Posix.fileGroup fs
     uEntry <- Posix.getUserEntryForID uid
     gEntry <- Posix.getGroupEntryForID gid
-    fType <-
+    (fType, fSize) <-
         case () of
-            () | Posix.isRegularFile fs     -> return FTNormal
-               | Posix.isSymbolicLink fs    -> return FTSymbolicLink
-               | Posix.isCharacterDevice fs -> return FTCharacterSpecial
-               | Posix.isBlockDevice fs     -> return FTBlockSpecial
-               | Posix.isDirectory fs       -> return FTDirectory
-               | Posix.isNamedPipe fs       -> return FTFifo
+            () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
+               | Posix.isSymbolicLink fs    -> do
+                     ln <- Posix.readSymbolicLink fp
+                     return (FTSymbolicLink ln, 0)
+               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, 0)
+               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
+               | Posix.isDirectory fs       -> return (FTDirectory, 0)
+               | Posix.isNamedPipe fs       -> return (FTFifo, 0)
                | otherwise                  -> error $ "Unsupported file type: " ++ fp
     return FileInfo
         { filePath      = fp
-        , fileUserID    = uid
+        , fileUserId    = uid
         , fileUserName  = Posix.userName uEntry
-        , fileGroupID   = gid
+        , fileGroupId   = gid
         , fileGroupName = Posix.groupName gEntry
         , fileMode      = Posix.fileMode fs .&. 0o7777
-        , fileSize      = Posix.fileSize fs
+        , fileSize      = fSize
         , fileType      = fType
         , fileModTime   = Posix.modificationTime fs
         }

@@ -27,7 +27,6 @@ import Data.List (sort, nub)
 import Data.Bits ((.&.))
 import qualified Data.ByteString        as S
 import Data.ByteString.Builder
-import Data.ByteString.Builder.Extra (defaultChunkSize)
 import qualified Data.ByteString.Char8  as S8
 import qualified Data.ByteString.Short  as SS
 import qualified Data.ByteString.Lazy as SL
@@ -35,10 +34,12 @@ import qualified Data.ByteString.Unsafe as BU
 import Foreign.C.Types (CTime(..))
 import System.Posix.Types (CMode)
 import System.FilePath
+import System.Directory (getCurrentDirectory, createDirectoryIfMissing)
 import Data.Word (Word8)
 import Data.Int (Int64)
 import Data.ByteString.Short (ShortByteString, toShort, fromShort)
 import Data.Monoid ((<>))
+
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<*))
 #endif
@@ -63,7 +64,7 @@ headerFileType h =
         0  -> FTNormal
         48 -> FTNormal
         49 -> FTHardLink
-        50 -> FTSymbolicLink
+        50 -> FTSymbolicLink (S8.unpack (fromShort (headerLinkName h)))
         51 -> FTCharacterSpecial
         52 -> FTBlockSpecial
         53 -> FTDirectory
@@ -111,7 +112,7 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
     zero = 48
     seven = 55
 
-untar :: Monad m => ConduitM ByteString TarChunk m ()
+untar :: MonadIO m => ConduitM ByteString TarChunk m ()
 untar =
     loop 0
   where
@@ -162,13 +163,13 @@ untar =
                 yield $ ChunkException $ IncompletePayload offset $ fromIntegral size
                 return offset
             Just bs -> do
-                let (x, y) =
-                        S.splitAt (fromIntegral (size `mod` fromIntegral defaultChunkSize)) bs
+                let (x, y) = S.splitAt (fromIntegral (min size (fromIntegral (maxBound :: Int)))) bs
                 yield $ ChunkPayload offset x
                 let size' = size - fromIntegral (S.length x)
                     offset' = offset + fromIntegral (S.length x)
                 unless (S.null y) (leftover y)
                 payloads offset' size'
+
 
 -- | Process a single tar entry. See 'withEntries' for more details.
 withEntry :: MonadThrow m
@@ -242,8 +243,10 @@ withEntries = peekForever . withEntry
 blockSize :: FileOffset
 blockSize = 512
 
+terminatorBlock :: ByteString
+terminatorBlock = S.replicate (fromIntegral (2 * blockSize)) 0
 
-headerFromFileInfo :: (MonadThrow m, MonadIO m) =>
+headerFromFileInfo :: MonadThrow m =>
                       FileOffset -- ^ Starting offset within the tarball. Must
                       -- be multiple of 512, otherwise error.
                    -> FileInfo -- ^ File info.
@@ -252,25 +255,25 @@ headerFromFileInfo offset fi = do
     unless (offset `mod` 512 == 0) $
         throwM $ TarCreationError $ "Offset must always be a multiple of 512"
     let (prefix, suffix) = splitPathAt 100 $ filePath fi
-    (payloadSize, linkIndicator) <-
+    (payloadSize, linkName, linkIndicator) <-
         case fileType fi of
-          FTNormal       -> return (fileSize fi, 48)
-          FTSymbolicLink -> return (0, 50)
-          FTDirectory    -> return (0, 53)
-          fty            -> throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
+          FTNormal          -> return (fileSize fi, SS.empty, 48)
+          FTSymbolicLink ln -> return (0, toShort (S8.pack ln), 50)
+          FTDirectory       -> return (0, SS.empty, 53)
+          fty               -> throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
     return Header
           { headerOffset = offset
           , headerPayloadOffset = offset + 512
           , headerFileNameSuffix = suffix
           , headerFileMode = fileMode fi
-          , headerOwnerId = fileUserID fi
-          , headerGroupId = fileGroupID fi
+          , headerOwnerId = fileUserId fi
+          , headerGroupId = fileGroupId fi
           , headerPayloadSize = payloadSize
           , headerTime = fileModTime fi
           , headerLinkIndicator = linkIndicator
-          , headerLinkName = SS.empty
-          , headerOwnerName = SS.toShort (S8.pack (fileUserName fi))
-          , headerGroupName = SS.toShort (S8.pack (fileGroupName fi))
+          , headerLinkName = linkName
+          , headerOwnerName = toShort (S8.pack (fileUserName fi))
+          , headerGroupName = toShort (S8.pack (fileGroupName fi))
           , headerDeviceMajor = 0
           , headerDeviceMinor = 0
           , headerFileNamePrefix = prefix
@@ -281,10 +284,10 @@ headerFromFileInfo offset fi = do
 -- split as a valid path, i.e split at a path separator only.
 splitPathAt :: Int -> FilePath -> (ShortByteString, ShortByteString)
 splitPathAt n fp
-    | length fp < n = (SS.empty, SS.toShort (S8.pack fp))
+    | length fp < n = (SS.empty, toShort (S8.pack fp))
     | otherwise =
         let sfp = splitPath fp
-            toShortPath = SS.toShort . S8.pack . joinPath
+            toShortPath = toShort . S8.pack . joinPath
             sepWith p (tlen, prefix, suffix) =
                 case tlen + length p of
                     tlen'
@@ -361,7 +364,7 @@ encodeShort !len !sbs
     | lenShort <= len = return $ byteString $ fst $ S.unfoldrN len maybeShort 0
     | otherwise =
         throwM $
-        TarCreationError $ "Can't fit '" ++ S8.unpack (SS.fromShort sbs) ++ "' into the tar header"
+        TarCreationError $ "Can't fit '" ++ S8.unpack (fromShort sbs) ++ "' into the tar header"
   where
     lenShort = SS.length sbs
     maybeShort !i
@@ -382,65 +385,159 @@ encodeOctal !len !val =
         in Just (fromIntegral r + 48, q)
 
 
--- | Add a single file into the tarball. Returns the new offset where next entry can be placed.
-addFileTar
-  :: MonadResource m =>
-     FileOffset -> FileInfo -> ConduitM i S8.ByteString m FileOffset
-addFileTar offset fi = do
-    header <- headerFromFileInfo offset fi
-    packHeader header >>= yield
-    sourceFile $ filePath fi
-    let offset' = offset + blockSize + fileSize fi
-        pad = blockSize * (1 + (offset' `div` blockSize)) - offset'
-    yield $ S.replicate (fromIntegral pad) 0
-    return (offset' + pad)
+
+-- | Produce a ByteString chunk with NUL characters of the size needed to get up
+-- to the next 512 byte mark in respect to the supplied offset and return that
+-- offset incremented to that mark.
+yieldNulPadding :: Monad m => FileOffset -> ConduitM i ByteString m FileOffset
+yieldNulPadding n = do
+    let pad = blockSize - (n `mod` blockSize)
+    if pad /= blockSize
+        then yield (S.replicate (fromIntegral pad) 0) >> return (n + pad)
+        else return n
 
 
--- | Add a directory recursively into the tarball. Returns the new offset
--- where next entry can be placed.
-addDirectoryTar :: MonadResource m =>
-                   FileOffset -> FileInfo -> ConduitM i S8.ByteString m FileOffset
-addDirectoryTar offset fi = do
-    header <- headerFromFileInfo offset fi
-    packHeader header >>= yield
-    sourceDirectory (filePath fi) .| addFilesTarConduit (offset + blockSize)
 
 
--- | Add a directory recursively into the tarball. Returns the new offset
--- where next entry can be placed.
-addSymbolicLinkTar :: MonadResource m =>
-                      FileOffset -> FileInfo -> ConduitM i S8.ByteString m FileOffset
-addSymbolicLinkTar offset fi = do
-    header <- headerFromFileInfo offset fi
-    packHeader header >>= yield
-    return (offset + blockSize)
+-- | Handle tar payload, while validating its size and padding it to the full
+-- block at the end.
+tarPayload :: MonadThrow m =>
+              FileOffset -- ^ Received payload size
+           -> Header -- ^ Header for the file that we are currently recieving the payload for
+           -> (FileOffset -> ConduitM (Either a ByteString) ByteString m FileOffset)
+           -- ^ Continuation for after all payload has been received
+           -> ConduitM (Either a ByteString) ByteString m FileOffset
+tarPayload size header cont
+    | size == headerPayloadSize header = cont (headerOffset header + blockSize)
+    | otherwise = do
+        eContent <- await
+        case eContent of
+            Just h@(Left _) -> do
+                leftover h
+                throwM $ TarCreationError "Not enough payload."
+            Just (Right content) -> do
+                let size' = size + fromIntegral (S.length content)
+                unless (size' <= headerPayloadSize header) $
+                    throwM $ TarCreationError "Too much payload"
+                yield content
+                if size' == headerPayloadSize header
+                    then do
+                        paddedSize <- yieldNulPadding size'
+                        cont (headerPayloadOffset header + paddedSize)
+                    else tarPayload size' header cont
+            Nothing -> throwM $ TarCreationError "Stream finished abruptly. Not enough payload."
 
 
-addFilesTarConduit :: MonadResource m => FileOffset -> ConduitM FilePath S.ByteString m FileOffset
-addFilesTarConduit offset = do
+tarFileInfo :: MonadThrow m =>
+             FileOffset -> ConduitM (Either FileInfo ByteString) ByteString m FileOffset
+tarFileInfo offset = do
+    eContent <- await
+    case eContent of
+        Just (Right c) ->
+            throwM $ TarCreationError "Received payload without a corresponding FileInfo."
+        Just (Left fi) -> do
+            header <- headerFromFileInfo offset fi
+            packHeader header >>= yield
+            tarPayload 0 header tarFileInfo
+        Nothing -> do
+            yield terminatorBlock
+            return $ offset + fromIntegral (S.length terminatorBlock)
+
+
+tar :: MonadResource m =>
+       ConduitM (Either FileInfo ByteString) ByteString m FileOffset
+tar = tarFileInfo 0
+
+
+
+tarHeader :: MonadThrow m =>
+             FileOffset -> ConduitM (Either Header ByteString) ByteString m FileOffset
+tarHeader offset = do
+    eContent <- await
+    case eContent of
+        Just c@(Right _) -> do
+            leftover c
+            throwM $ TarCreationError "Received payload without a corresponding Header."
+        Just (Left header) -> do
+            packHeader header >>= yield
+            tarPayload 0 header tarHeader
+        Nothing -> do
+            yield terminatorBlock
+            return $ offset + fromIntegral (S.length terminatorBlock)
+
+
+
+filePathConduit :: MonadResource m =>
+    ConduitM FilePath (Either FileInfo ByteString) m ()
+filePathConduit = do
     mfp <- await
     case mfp of
         Just fp -> do
             fi <- liftIO $ getFileInfo fp
-            offset' <-
-                case fileType fi of
-                    FTNormal       -> addFileTar offset fi
-                    FTSymbolicLink -> addSymbolicLinkTar offset fi
-                    FTDirectory    -> addDirectoryTar offset fi
-                    fty            ->
+            case fileType fi of
+                    FTNormal         -> do
+                        yield (Left fi)
+                        sourceFile (filePath fi) .| mapC Right
+                    FTSymbolicLink _ ->
+                        yield (Left fi)
+                    FTDirectory      -> do
+                        yield (Left fi)
+                        sourceDirectory (filePath fi) .| filePathConduit
+                    fty              -> do
+                        leftover fp
                         throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
-            addFilesTarConduit offset'
-        Nothing -> return offset
-
-tarConduit :: MonadResource m => ConduitM FilePath S.ByteString m FileOffset
-tarConduit = do
-  let pad = 2 * blockSize -- two blocks are the terminator for the tar file
-  offset <- addFilesTarConduit 0
-  yield $ S.replicate (fromIntegral pad) 0
-  return (offset + pad)
+            filePathConduit
+        Nothing -> return ()
 
 
-createTar :: FilePath -> [FilePath] -> IO ()
-createTar tarfp dirs = do
-  let dirs' = nub $ sort $ map normalise dirs
-  runConduitRes $ yieldMany dirs .| void tarConduit .| sinkFile tarfp
+-- | Recursively tar all of the files and directories.
+tarFiles :: MonadResource m => ConduitM FilePath ByteString m FileOffset
+tarFiles = filePathConduit .| tar
+
+
+
+createTarball :: FilePath -- ^ File name for the tarball
+              -> [FilePath] -- ^ List of files and directories to include in the tarball
+              -> IO ()
+createTarball tarfp dirs = do
+    let dirs' = nub $ sort $ map normalise dirs
+    runConduitRes $ yieldMany dirs .| void tarFiles .| sinkFile tarfp
+
+
+
+fileInfoFromHeader :: Header -> FileInfo
+fileInfoFromHeader header@(Header {..}) =
+    FileInfo
+    { filePath =
+          S8.unpack (fromShort headerFileNamePrefix) </> S8.unpack (fromShort headerFileNameSuffix)
+    , fileUserId = headerOwnerId
+    , fileUserName = S8.unpack (fromShort headerOwnerName)
+    , fileGroupId = headerGroupId
+    , fileGroupName = S8.unpack (fromShort headerGroupName)
+    , fileMode = headerFileMode
+    , fileSize = headerPayloadSize
+    , fileType = headerFileType header
+    , fileModTime = headerTime
+    }
+
+
+
+extractTarball :: FilePath -- ^ Filename for the tarball
+               -> Maybe FilePath -- ^ Folder where tarball should be extract
+                                 -- to. Default is the current path
+               -> IO ()
+extractTarball tarfp mcd = do
+    cd <- maybe getCurrentDirectory return mcd
+    createDirectoryIfMissing True cd
+    let extract header = do
+            let FileInfo {..} = fileInfoFromHeader header
+                fp = cd </> filePath
+            liftIO $ putStrLn fp
+            case fileType of
+                FTDirectory -> liftIO $ createDirectoryIfMissing False fp
+                FTSymbolicLink link -> -- TODO: remove link if already exists
+                    liftIO $ createSymbolicLink link fp
+                FTNormal -> sinkFile fp
+                ty -> error $ "Unknown format: " ++ show header
+
+    runConduitRes $ sourceFileBS tarfp .| untar .| withEntries extract
