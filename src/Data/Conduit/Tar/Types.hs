@@ -3,6 +3,7 @@ module Data.Conduit.Tar.Types
     ( Header(..)
     , TarChunk(..)
     , TarException(..)
+    , TarCreateException(..)
     , FileType(..)
     , FileInfo(..)
     , FileOffset
@@ -58,6 +59,7 @@ data Header = Header
     , headerTime           :: !EpochTime
     , headerLinkIndicator  :: !Word8
     , headerLinkName       :: !ShortByteString
+    , headerMagicVersion   :: !ShortByteString
     , headerOwnerName      :: !ShortByteString
     , headerGroupName      :: !ShortByteString
     , headerDeviceMajor    :: !DeviceID
@@ -87,6 +89,13 @@ data TarException
     | BadTrailer        !FileOffset
     | InvalidHeader     !FileOffset
     | BadChecksum       !FileOffset
-    | TarCreationError  !String
+    | FileTypeError     !FileOffset !Char !String
     deriving (Show, Typeable)
 instance Exception TarException
+
+
+data TarCreateException
+    = FileNameTooLong   !FileInfo
+    | TarCreationError  !String
+    deriving (Show, Typeable)
+instance Exception TarCreateException
