@@ -1,10 +1,13 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE CPP #-}
 module Data.Conduit.Tar.Unix
     ( getFileInfo
-    , Dir.doesDirectoryExist
-    , Posix.createSymbolicLink
+    , restoreFile
     ) where
 
+import Conduit
+import Control.Monad (when)
+import Data.ByteString (ByteString)
 import qualified System.Directory as Dir
 import qualified System.Posix.Files as Posix
 import qualified System.Posix.User as Posix
@@ -44,3 +47,21 @@ getFileInfo fp = do
         , fileModTime   = Posix.modificationTime fs
         }
 
+
+restoreFile :: (MonadResource m) =>
+               FileInfo -> ConduitM ByteString o m ()
+restoreFile FileInfo {..} = do
+    case fileType of
+        FTDirectory -> liftIO $ Dir.createDirectoryIfMissing False filePath
+        FTSymbolicLink link ->
+            liftIO $ do
+                exist <- Posix.fileExist filePath
+                when exist $ Dir.removeFile filePath
+                Posix.createSymbolicLink link filePath
+        FTNormal -> do
+            sinkFile filePath
+        ty -> error $ "Unsupported tar entry type: " ++ show ty
+    liftIO $ do
+        Posix.setOwnerAndGroup filePath fileUserId fileGroupId
+        Posix.setFileMode filePath fileMode
+        Posix.setFileTimes filePath fileModTime fileModTime

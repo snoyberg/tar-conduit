@@ -8,12 +8,18 @@ not very well tested. See the documentation of 'withEntries' for an usage sample
 -}
 module Data.Conduit.Tar
     ( -- * Basic functions
-      untar
+      tar
+    , untar
+    , restoreFile
+    , restoreFileInto
     , withEntry
     , withEntries
       -- * Helper functions
     , headerFileType
     , headerFilePath
+      -- ** Creation
+    , tarFilePath
+    , filePathConduit
       -- * Directly on files
     , createTarball
     , extractTarball
@@ -28,7 +34,6 @@ import Control.Monad.Catch (MonadCatch, try)
 import Data.ByteString (ByteString)
 import Data.Typeable (Typeable)
 import Data.Foldable (foldr')
-import Data.List (sort, nub)
 import Data.Bits ((.&.))
 import qualified Data.ByteString        as S
 import Data.ByteString.Builder
@@ -39,7 +44,7 @@ import qualified Data.ByteString.Unsafe as BU
 import Foreign.C.Types (CTime(..))
 import System.Posix.Types (CMode)
 import System.FilePath
-import System.Directory (getCurrentDirectory, createDirectoryIfMissing, removeFile, doesFileExist)
+import System.Directory  (getCurrentDirectory, createDirectoryIfMissing)
 import Data.Word (Word8)
 import Data.Int (Int64)
 import Data.ByteString.Short (ShortByteString, toShort, fromShort)
@@ -118,8 +123,8 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
     zero = 48
     seven = 55
 
-untar :: MonadIO m => ConduitM ByteString TarChunk m ()
-untar =
+untarChunks :: Monad m => ConduitM ByteString TarChunk m ()
+untarChunks =
     loop 0
   where
     loop !offset = assert (offset `mod` 512 == 0) $ do
@@ -217,7 +222,7 @@ Here is a full example function, that reads a compressed tar archive and for eac
 > filedigests :: FilePath -> IO ()
 > filedigests fp = runConduitRes (  sourceFileBS fp          -- read the raw file
 >                                .| ungzip                   -- gunzip
->                                .| CT.untar                 -- decode the tar archive
+>                                .| CT.untarChunks           -- decode the tar archive
 >                                .| CT.withEntries hashentry -- process each file
 >                                .| printC                   -- print the results
 >                                )
@@ -291,12 +296,18 @@ withFileInfo inner = do
             Nothing -> return ()
 
 
--- TODO: should probably be named `untar`
 -- | Extract tarball
-untarFiles :: MonadThrow m
-             => (FileInfo -> ConduitM ByteString o m ())
-             -> ConduitM TarChunk o m ()
-untarFiles = peekForever . withFileInfo
+untarFromChunks :: MonadThrow m
+                => (FileInfo -> ConduitM ByteString o m ())
+                -> ConduitM TarChunk o m ()
+untarFromChunks = peekForever . withFileInfo
+
+
+-- | Extract tarball
+untar :: MonadThrow m
+      => (FileInfo -> ConduitM ByteString o m ())
+      -> ConduitM ByteString o m ()
+untar inner = untarChunks .| untarFromChunks inner
 
 
 
@@ -559,14 +570,21 @@ tarFileInfo offset = do
                 Right header -> do
                     packHeader header >>= yield
                     tarPayload 0 header tarFileInfo
-        Nothing -> do
-            yield terminatorBlock
-            return $ offset + fromIntegral (S.length terminatorBlock)
+        Nothing -> return offset
 
 
+
+
+
+-- | Create a tar archive by suppying `FileInfo`, which must be immediately
+-- followed by the file content, wheneve its type is `FTNormal`.
 tar :: (MonadCatch m, MonadResource m) =>
        ConduitM (Either FileInfo ByteString) ByteString m FileOffset
-tar = tarFileInfo 0
+tar = do
+    offset <- tarFileInfo 0
+    yield terminatorBlock
+    return $ offset + fromIntegral (S.length terminatorBlock)
+
 
 
 
@@ -586,7 +604,8 @@ tarHeader offset = do
             return $ offset + fromIntegral (S.length terminatorBlock)
 
 
-
+-- | Turn a stream of file paths into a stream of `FileInfo` and file
+-- conent. All paths will be decended into recursively.
 filePathConduit :: MonadResource m =>
                    ConduitM FilePath (Either FileInfo ByteString) m ()
 filePathConduit = do
@@ -611,8 +630,8 @@ filePathConduit = do
 
 
 -- | Recursively tar all of the files and directories.
-tarFiles :: (MonadCatch m, MonadResource m) => ConduitM FilePath ByteString m FileOffset
-tarFiles = filePathConduit .| tar
+tarFilePath :: (MonadCatch m, MonadResource m) => ConduitM FilePath ByteString m FileOffset
+tarFilePath = filePathConduit .| tar
 
 
 
@@ -620,8 +639,7 @@ createTarball :: FilePath -- ^ File name for the tarball
               -> [FilePath] -- ^ List of files and directories to include in the tarball
               -> IO ()
 createTarball tarfp dirs = do
-    let dirs' = nub $ sort $ map normalise dirs
-    runConduitRes $ yieldMany dirs .| void tarFiles .| sinkFile tarfp
+    runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkFile tarfp
 
 
 
@@ -649,17 +667,11 @@ extractTarball :: FilePath -- ^ Filename for the tarball
 extractTarball tarfp mcd = do
     cd <- maybe getCurrentDirectory return mcd
     createDirectoryIfMissing True cd
-    let extract FileInfo {..} = do
-            let fp = cd </> makeRelative "/" filePath
-            case fileType of
-                FTDirectory -> liftIO $ createDirectoryIfMissing False fp
-                FTSymbolicLink link ->
-                    liftIO $ do
-                      exist <- doesFileExist fp
-                      when exist $ removeFile fp
-                      createSymbolicLink link fp
-                FTNormal -> do
-                    --liftIO $ putStrLn fp
-                    sinkFile fp
-                ty -> error $ "Unsupported tar entry type: " ++ show ty
-    runConduitRes $ sourceFileBS tarfp .| untar .| untarFiles extract
+    runConduitRes $ sourceFileBS tarfp .| untar (restoreFileInto cd)
+
+
+-- | Restore all files into a folder. Absolute file paths will be turned into
+-- relative to the supplied folder.
+restoreFileInto :: MonadResource m =>
+                   FilePath -> FileInfo -> ConduitM ByteString o m ()
+restoreFileInto cd fi = restoreFile fi { filePath = cd </> makeRelative "/" (filePath fi) }
