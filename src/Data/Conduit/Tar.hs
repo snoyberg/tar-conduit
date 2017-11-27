@@ -313,18 +313,12 @@ handleGnuTarHeader h = do
             -- TODO : Implement restoring of sparse files
         _ -> return ()
 
--- | Extract tarball
-untarFromChunks :: MonadThrow m
-                => (FileInfo -> ConduitM ByteString o m ())
-                -> ConduitM TarChunk o m ()
-untarFromChunks = peekForever . withFileInfo
-
 
 -- | Extract tarball
 untar :: MonadThrow m
       => (FileInfo -> ConduitM ByteString o m ())
       -> ConduitM ByteString o m ()
-untar inner = untarChunks .| untarFromChunks inner
+untar inner = untarChunks .| withFileInfo inner
 
 
 
@@ -391,8 +385,8 @@ headerFromFileInfo offset fi = do
           , headerLinkIndicator = linkIndicator
           , headerLinkName = linkName
           , headerMagicVersion = ustarMagicVersion
-          , headerOwnerName = toShort (S8.pack (fileUserName fi))
-          , headerGroupName = toShort (S8.pack (fileGroupName fi))
+          , headerOwnerName = toShort $ fileUserName fi
+          , headerGroupName = toShort $ fileGroupName fi
           , headerDeviceMajor = 0
           , headerDeviceMinor = 0
           , headerFileNamePrefix = prefix
@@ -401,20 +395,19 @@ headerFromFileInfo offset fi = do
 
 -- | Split a file path at the @n@ mark from the end, while still keeping the
 -- split as a valid path, i.e split at a path separator only.
-splitPathAt :: Int -> FilePath -> (ShortByteString, ShortByteString)
+splitPathAt :: Int -> ByteString -> (ShortByteString, ShortByteString)
 splitPathAt n fp
-    | length fp < n = (SS.empty, toShort (S8.pack fp))
+    | S.length fp < n = (SS.empty, toShort fp)
     | otherwise =
-        let sfp = splitPath fp
-            toShortPath = toShort . S8.pack . joinPath
+        let sfp = S8.splitWith isPathSeparator fp
+            toShortPath = toShort . S8.intercalate pathSeparatorS
             sepWith p (tlen, prefix, suffix) =
-                case tlen + length p of
+                case tlen + S.length p of
                     tlen'
                         | tlen' <= n -> (tlen', prefix, p : suffix)
                     tlen' -> (tlen', p : prefix, suffix)
             (_, prefix, suffix) = foldr' sepWith (0, [], []) sfp
         in (toShortPath prefix, toShortPath suffix)
-
 
 packHeader :: MonadThrow m => Header -> m S.ByteString
 packHeader header = do
@@ -550,7 +543,7 @@ tarFileInfo offset = do
             eHeader <- try $ headerFromFileInfo offset fi
             case eHeader of
                 Left (FileNameTooLong _) -> do
-                    let fPath = S8.pack $ filePath fi
+                    let fPath = filePath fi
                         fPathLen = fromIntegral (S.length fPath + 1)
                         pad =
                             case fPathLen `mod` blockSize of
@@ -558,7 +551,7 @@ tarFileInfo offset = do
                                 x -> blockSize - x
                     header <-
                         headerFromFileInfo (offset + blockSize + fPathLen + pad) $
-                        fi {filePath = S8.unpack $ S.take 100 fPath}
+                        fi {filePath = S.take 100 fPath}
                     pHeader <- packHeader header
                     pFileNameHeader <-
                         packHeader $
@@ -623,12 +616,12 @@ filePathConduit = do
             case fileType fi of
                     FTNormal         -> do
                         yield (Left fi)
-                        sourceFile (filePath fi) .| mapC Right
+                        sourceFile (S8.unpack (filePath fi)) .| mapC Right
                     FTSymbolicLink _ ->
                         yield (Left fi)
                     FTDirectory      -> do
                         yield (Left fi)
-                        sourceDirectory (filePath fi) .| filePathConduit
+                        sourceDirectory (S8.unpack (filePath fi)) .| filePathConduit
                     fty              -> do
                         leftover fp
                         throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
@@ -649,16 +642,18 @@ createTarball tarfp dirs = do
     runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkFile tarfp
 
 
+pathSeparatorS = S8.singleton pathSeparator
 
 fileInfoFromHeader :: Header -> FileInfo
 fileInfoFromHeader header@(Header {..}) =
     FileInfo
     { filePath =
-          S8.unpack (fromShort headerFileNamePrefix) </> S8.unpack (fromShort headerFileNameSuffix)
+          fromShort headerFileNamePrefix <> pathSeparatorS <>
+          fromShort headerFileNameSuffix
     , fileUserId = headerOwnerId
-    , fileUserName = S8.unpack (fromShort headerOwnerName)
+    , fileUserName = fromShort headerOwnerName
     , fileGroupId = headerGroupId
-    , fileGroupName = S8.unpack (fromShort headerGroupName)
+    , fileGroupName = fromShort headerGroupName
     , fileMode = headerFileMode
     , fileSize = headerPayloadSize
     , fileType = headerFileType header
@@ -681,4 +676,5 @@ extractTarball tarfp mcd = do
 -- relative to the supplied folder.
 restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString o m ()
-restoreFileInto cd fi = restoreFile fi { filePath = cd </> makeRelative "/" (filePath fi) }
+restoreFileInto cd fi =
+    restoreFile fi {filePath = S8.pack (cd </> makeRelative "/" (S8.unpack (filePath fi)))}

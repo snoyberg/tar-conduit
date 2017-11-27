@@ -8,6 +8,7 @@ module Data.Conduit.Tar.Unix
 import Conduit
 import Control.Monad (when)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8  as S8
 import qualified System.Directory as Dir
 import qualified System.Posix.Files as Posix
 import qualified System.Posix.User as Posix
@@ -36,11 +37,11 @@ getFileInfo fp = do
                | Posix.isNamedPipe fs       -> return (FTFifo, 0)
                | otherwise                  -> error $ "Unsupported file type: " ++ fp
     return FileInfo
-        { filePath      = fp
+        { filePath      = S8.pack fp
         , fileUserId    = uid
-        , fileUserName  = Posix.userName uEntry
+        , fileUserName  = S8.pack $ Posix.userName uEntry
         , fileGroupId   = gid
-        , fileGroupName = Posix.groupName gEntry
+        , fileGroupName = S8.pack $ Posix.groupName gEntry
         , fileMode      = Posix.fileMode fs .&. 0o7777
         , fileSize      = fSize
         , fileType      = fType
@@ -51,17 +52,18 @@ getFileInfo fp = do
 restoreFile :: (MonadResource m) =>
                FileInfo -> ConduitM ByteString o m ()
 restoreFile FileInfo {..} = do
+    let filePath' = S8.unpack filePath
     case fileType of
-        FTDirectory -> liftIO $ Dir.createDirectoryIfMissing False filePath
+        FTDirectory -> liftIO $ Dir.createDirectoryIfMissing False filePath'
         FTSymbolicLink link ->
             liftIO $ do
-                exist <- Posix.fileExist filePath
-                when exist $ Dir.removeFile filePath
-                Posix.createSymbolicLink link filePath
+                exist <- Posix.fileExist filePath'
+                when exist $ Dir.removeFile filePath'
+                Posix.createSymbolicLink link filePath'
         FTNormal -> do
-            sinkFile filePath
+            sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
-        Posix.setOwnerAndGroup filePath fileUserId fileGroupId
-        Posix.setFileMode filePath fileMode
-        Posix.setFileTimes filePath fileModTime fileModTime
+        Posix.setOwnerAndGroup filePath' fileUserId fileGroupId
+        Posix.setFileMode filePath' fileMode
+        Posix.setFileTimes filePath' fileModTime fileModTime

@@ -34,11 +34,11 @@ data FileType
 
 
 data FileInfo = FileInfo
-    { filePath      :: !FilePath -- ^ File path.
+    { filePath      :: !ByteString -- ^ File path.
     , fileUserId    :: !UserID  -- ^ Unix user id.
-    , fileUserName  :: !String  -- ^ Unix user name.
+    , fileUserName  :: !ByteString  -- ^ Unix user name.
     , fileGroupId   :: !GroupID -- ^ Unix group id.
-    , fileGroupName :: !String  -- ^ Unix group name.
+    , fileGroupName :: !ByteString  -- ^ Unix group name.
     , fileMode      :: !FileMode -- ^ Unix file permissions
     , fileSize      :: !FileOffset -- ^ File size
     , fileType      :: !FileType  -- ^ File type. `FTNormal`, `FTSymbolicLink`
