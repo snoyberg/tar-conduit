@@ -190,19 +190,22 @@ withEntry inner = do
     mc <- await
     case mc of
         Nothing -> throwM NoMoreHeaders
-        Just (ChunkHeader h) -> payloads .| (inner h <* sinkNull)
+        Just (ChunkHeader h) -> payloadsConduit .| (inner h <* sinkNull)
         Just x@(ChunkPayload offset _bs) -> do
             leftover x
             throwM $ UnexpectedPayload offset
         Just (ChunkException e) -> throwM e
-  where
-    payloads = do
-        mx <- await
-        case mx of
-            Just (ChunkPayload _ bs) -> yield bs >> payloads
-            Just x@ChunkHeader{} -> leftover x
-            Just (ChunkException e) -> throwM e
-            Nothing -> return ()
+
+
+payloadsConduit :: MonadThrow m
+               => ConduitM TarChunk ByteString m ()
+payloadsConduit = do
+    mx <- await
+    case mx of
+        Just (ChunkPayload _ bs) -> yield bs >> payloadsConduit
+        Just x@ChunkHeader {} -> leftover x
+        Just (ChunkException e) -> throwM e
+        Nothing -> return ()
 
 
 {-| This function handles each entry of the tar archive according to the
@@ -247,56 +250,68 @@ withEntries :: MonadThrow m
 withEntries = peekForever . withEntry
 
 
--- | Process a single tar entry. See 'withEntries' for more details.
+-- | Process a single tar entry. See 'withEntries' for a more low level tar processing. Currently
+-- this function has full suppoort of ustar format and a minimal support for GNU tar:
+--
+-- * Long file names 'L'
+-- * It discards sparse files 'S'
+-- * Ignores any other custom header types
+--
 withFileInfo :: MonadThrow m
-             => (FileInfo -> ConduitM ByteString o m r)
-             -> ConduitM TarChunk o m r
+             => (FileInfo -> ConduitM ByteString o m ())
+             -> ConduitM TarChunk o m ()
 withFileInfo inner = do
     mc <- await
     case mc of
-        Nothing -> throwM NoMoreHeaders
+        Nothing -> return ()
         Just (ChunkHeader h)
-            | headerLinkIndicator h == 76 && headerMagicVersion h == gnuTarMagicVersion -> do
-                let pSize = headerPayloadSize h
-                -- guard against names that are too long.
-                unless (0 < pSize && pSize <= 4096) $
-                    throwM $
-                    FileTypeError (headerPayloadOffset h) 'L' $
-                    "Filepath is too long: " ++ show pSize
-                longFileName <- payloads .| foldC
-                mcNext <- await
-                case mcNext of
-                    Just (ChunkHeader nh) -> do
-                        unless (S.isPrefixOf (fromShort (headerFileNameSuffix nh)) longFileName) $
-                            throwM $
-                            FileTypeError (headerPayloadOffset nh) 'L' $
-                            "Long filename doesn't match the original."
-                        leftover
-                            (ChunkHeader $
-                             nh
-                             { headerFileNameSuffix = toShort $ S.init longFileName
-                             , headerFileNamePrefix = SS.empty
-                             })
-                    Just c@(ChunkPayload offset _) -> do
-                        leftover c
-                        throwM $ InvalidHeader offset
-                    Nothing -> throwM NoMoreHeaders
-                withFileInfo inner
+            | headerLinkIndicator h >= 55 -> do
+                when (headerMagicVersion h == gnuTarMagicVersion) $ handleGnuTarHeader h
+                withFileInfo inner -- silently skip unsupported headers
         Just (ChunkHeader h) -> do
-            payloads .| (inner (fileInfoFromHeader h) <* sinkNull)
+            payloadsConduit .| (inner (fileInfoFromHeader h) <* sinkNull)
         Just x@(ChunkPayload offset _bs) -> do
             leftover x
             throwM $ UnexpectedPayload offset
         Just (ChunkException e) -> throwM e
-  where
-    payloads = do
-        mx <- await
-        case mx of
-            Just (ChunkPayload _ bs) -> yield bs >> payloads
-            Just x@ChunkHeader {} -> leftover x
-            Just (ChunkException e) -> throwM e
-            Nothing -> return ()
 
+
+-- | Take care of custom GNU tar format.
+handleGnuTarHeader :: MonadThrow m
+                   => Header
+                   -> ConduitM TarChunk o m ()
+handleGnuTarHeader h = do
+    case headerLinkIndicator h of
+        76 -> do
+            let pSize = headerPayloadSize h
+            -- guard against names that are too long in order to prevent a DoS attack on unbounded
+            -- file names
+            unless (0 < pSize && pSize <= 4096) $
+                throwM $
+                FileTypeError (headerPayloadOffset h) 'L' $ "Filepath is too long: " ++ show pSize
+            longFileName <-
+                SL.toStrict . SL.init . toLazyByteString <$> (payloadsConduit .| sinkBuilder)
+            mcNext <- await
+            case mcNext of
+                Just (ChunkHeader nh) -> do
+                    unless (S.isPrefixOf (fromShort (headerFileNameSuffix nh)) longFileName) $
+                        throwM $
+                        FileTypeError (headerPayloadOffset nh) 'L' $
+                        "Long filename doesn't match the original."
+                    leftover
+                        (ChunkHeader $
+                         nh
+                         { headerFileNameSuffix = toShort longFileName
+                         , headerFileNamePrefix = SS.empty
+                         })
+                Just c@(ChunkPayload offset _) -> do
+                    leftover c
+                    throwM $ InvalidHeader offset
+                Nothing -> throwM NoMoreHeaders
+        83 -> do
+            payloadsConduit .| sinkNull -- discard sparse files payload
+            -- TODO : Implement restoring of sparse files
+        _ -> return ()
 
 -- | Extract tarball
 untarFromChunks :: MonadThrow m
@@ -409,7 +424,7 @@ packHeader header = do
     encChecksum <- encodeOctal 7 $ sumsl left + 32 * 8 + sumsl right
     return $
         SL.toStrict $
-        toLazyByteString $ mconcat [lazyByteString left, encChecksum, word8 0, lazyByteString right]
+        toLazyByteString $ lazyByteString left <> encChecksum <> word8 0 <> lazyByteString right
 
 
 packHeaderNoChecksum :: MonadThrow m => Header -> m (SL.ByteString, SL.ByteString)
@@ -430,33 +445,23 @@ packHeaderNoChecksum Header {..} = do
     hNamePrefix <- encodeShort 155 headerFileNamePrefix
     return
         ( toLazyByteString $
-          mconcat
-              [ hNameSuffix
-              , hFileMode
-              , word8 0
-              , hOwnerId
-              , word8 0
-              , hGroupId
-              , word8 0
-              , hPayloadSize
-              , word8 0
-              , hTime
-              , word8 0
-              ]
+          hNameSuffix <>
+          hFileMode <> word8 0 <>
+          hOwnerId <> word8 0 <>
+          hGroupId <> word8 0 <>
+          hPayloadSize <> word8 0 <>
+          hTime <> word8 0
         , toLazyByteString $
-          mconcat
-              [ word8 headerLinkIndicator
-              , hLinkName
-              , hMagicVersion
-              , hOwnerName
-              , hGroupName
-              , hDevMajor
-              , word8 0
-              , hDevMinor
-              , word8 0
-              , hNamePrefix
-              , byteString $ S.replicate 12 0
-              ])
+          word8 headerLinkIndicator <>
+          hLinkName <>
+          hMagicVersion <>
+          hOwnerName <>
+          hGroupName <>
+          hDevMajor <> word8 0 <>
+          hDevMinor <> word8 0 <>
+          hNamePrefix <>
+          byteString (S.replicate 12 0)
+        )
   where
     encodeDevice 0 = return $ byteString $ S.replicate 7 0
     encodeDevice devid = encodeOctal 7 devid
