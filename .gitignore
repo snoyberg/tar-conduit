@@ -1,1 +1,4 @@
 .stack-work
+*~
+tarballs/
+*.cabal
