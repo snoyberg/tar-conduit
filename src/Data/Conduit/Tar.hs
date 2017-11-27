@@ -277,7 +277,9 @@ withFileInfo inner = do
                              { headerFileNameSuffix = toShort $ S.init longFileName
                              , headerFileNamePrefix = SS.empty
                              })
-                    Just c -> leftover c
+                    Just c@(ChunkPayload offset _) -> do
+                        leftover c
+                        throwM $ InvalidHeader offset
                     Nothing -> throwM NoMoreHeaders
                 withFileInfo inner
         Just (ChunkHeader h) -> do
