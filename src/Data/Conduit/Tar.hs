@@ -54,6 +54,7 @@ data Header = Header
     , headerDeviceMajor    :: !Int
     , headerDeviceMinor    :: !Int
     , headerFileNamePrefix :: !ShortByteString
+    , headerIsExtended     :: !Bool
     }
     deriving Show
 
@@ -69,6 +70,7 @@ data FileType
     | FTBlockSpecial
     | FTDirectory
     | FTFifo
+    | FTSparse
     | FTOther !Word8
     deriving (Show, Eq)
 
@@ -83,6 +85,7 @@ headerFileType h =
         52 -> FTBlockSpecial
         53 -> FTDirectory
         54 -> FTFifo
+        83 -> FTSparse
         x  -> FTOther x
 
 type Offset = Int
@@ -115,40 +118,58 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
     let checksumBytes = S.take 8 $ S.drop 148 bs
         expectedChecksum = parseOctal checksumBytes
         actualChecksum = bsum bs - bsum checksumBytes + 8 * space
+        getOctal' :: Integral i => Offset -> Size -> i
+        getOctal' = getOctal bs
+        bsum :: ByteString -> Int
+        bsum = S.foldl' (\c n -> c + fromIntegral n) 0
+        getShort off len = toShort $ S.takeWhile (/= 0) $ S.take len $ S.drop off bs
+        space = 0x20
     unless (actualChecksum == expectedChecksum) (Left (BadChecksum offset))
     return Header
         { headerOffset         = offset
         , headerPayloadOffset  = offset + 512
         , headerFileNameSuffix = getShort 0 100
-        , headerFileMode       = getOctal 100 8
-        , headerOwnerId        = getOctal 108 8
-        , headerGroupId        = getOctal 116 8
-        , headerPayloadSize    = getOctal 124 12
-        , headerTime           = getOctal 136 12
+        , headerFileMode       = getOctal' 100 8
+        , headerOwnerId        = getOctal' 108 8
+        , headerGroupId        = getOctal' 116 8
+        , headerPayloadSize    = getOctal' 124 12
+        , headerTime           = getOctal' 136 12
         , headerLinkIndicator  = BU.unsafeIndex bs 156
         , headerOwnerName      = getShort 265 32
         , headerGroupName      = getShort 297 32
-        , headerDeviceMajor    = getOctal 329 8
-        , headerDeviceMinor    = getOctal 337 8
+        , headerDeviceMajor    = getOctal' 329 8
+        , headerDeviceMinor    = getOctal' 337 8
         , headerFileNamePrefix = getShort 345 155
+        , headerIsExtended     = BU.unsafeIndex bs 482 == 1
         }
+
+getOctal :: Integral i => ByteString -> Offset -> Size -> i
+getOctal bs off len = parseOctal $ S.take len $ S.drop off bs
+
+
+parseOctal :: Integral i => ByteString -> i
+parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
+           . S.takeWhile (\c -> zero <= c && c <= seven)
+           . S.dropWhile (== space)
   where
-    bsum :: ByteString -> Int
-    bsum = S.foldl' (\c n -> c + fromIntegral n) 0
-
-    getShort off len = toShort $ S.takeWhile (/= 0) $ S.take len $ S.drop off bs
-
-    getOctal off len = parseOctal $ S.take len $ S.drop off bs
-
-    parseOctal :: Integral i => ByteString -> i
-    parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
-               . S.takeWhile (\c -> zero <= c && c <= seven)
-               . S.dropWhile (== space)
-
-    space :: Integral i => i
-    space = 0x20
     zero = 48
     seven = 55
+    space = 0x20
+
+-- | Reads extended headers and drops them
+dropExtended :: Monad m => Offset -> ConduitM ByteString TarChunk m Offset
+dropExtended offset = do
+  bs <- takeCE 512 .| foldC
+  case S.length bs of
+    512 -> do
+      let !noffset = offset + 512
+      if BU.unsafeIndex bs 504 == 1
+        then dropExtended noffset
+        else return noffset
+    _ -> do
+      leftover bs
+      yield $ ChunkException $ IncompleteHeader offset
+      return offset
 
 untar :: Monad m => ConduitM ByteString TarChunk m ()
 untar =
@@ -177,8 +198,13 @@ untar =
                         yield $ ChunkException e
                     Right h -> do
                         yield $ ChunkHeader h
-                        offset' <- payloads (offset + 512) $ headerPayloadSize h
-                        let expectedOffset = offset + 512 + headerPayloadSize h +
+                        -- checks if there is there is one or more extended
+                        -- header, and, if so, drops them
+                        soffset <- if headerIsExtended h
+                                          then dropExtended offset
+                                          else return offset
+                        offset' <- payloads (soffset + 512) $ headerPayloadSize h
+                        let expectedOffset = soffset + 512 + headerPayloadSize h +
                                 (case (512 - (headerPayloadSize h `mod` 512)) of
                                     512 -> 0
                                     x -> x)
