@@ -17,7 +17,7 @@ module Data.Conduit.Tar.Types
 import Control.Exception (Exception)
 import Data.ByteString (ByteString)
 import Data.ByteString.Short (ShortByteString)
-import System.Posix.Types
+import System.PosixCompat.Types
 import Data.Typeable
 import Data.Word
 
@@ -99,3 +99,5 @@ data TarCreateException
     | TarCreationError  !String
     deriving (Show, Typeable)
 instance Exception TarCreateException
+
+

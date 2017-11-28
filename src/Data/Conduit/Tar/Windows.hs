@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE CPP #-}
-module Data.Conduit.Tar.Unix
+module Data.Conduit.Tar.Windows
     ( getFileInfo
     , restoreFile
     ) where
@@ -9,14 +9,17 @@ module Data.Conduit.Tar.Unix
 import Conduit
 import Control.Monad (when, void)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8  as S8
+import qualified Data.ByteString.Char8 as S8
 import qualified System.Directory as Dir
 import qualified System.PosixCompat.Files as Posix
 import qualified System.PosixCompat.User as Posix
-import System.Posix.Types
+import System.PosixCompat.Types
 import System.IO.Error
 import Data.Bits
 import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
+import Data.Time
+import Data.Time.Clock.POSIX
+import Foreign.C.Types (CTime(..))
 
 getFileInfo :: ByteString -> IO FileInfo
 getFileInfo fp = do
@@ -24,25 +27,20 @@ getFileInfo fp = do
     fs <- Posix.getSymbolicLinkStatus fp'
     let uid = Posix.fileOwner fs
         gid = Posix.fileGroup fs
-    uEntry <- Posix.getUserEntryForID uid
-    gEntry <- Posix.getGroupEntryForID gid
     (fType, fSize) <-
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
-               | Posix.isSymbolicLink fs    -> do
-                     ln <- Posix.readSymbolicLink fp'
-                     return (FTSymbolicLink (S8.pack ln), 0)
-               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, 0)
-               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
+               -- | Posix.isSymbolicLink fs    -> do
+               --       ln <- Posix.readSymbolicLink fp'
+               --       return (FTSymbolicLink (S8.pack ln), 0)
                | Posix.isDirectory fs       -> return (FTDirectory, 0)
-               | Posix.isNamedPipe fs       -> return (FTFifo, 0)
                | otherwise                  -> error $ "Unsupported file type: " ++ fp'
     return FileInfo
         { filePath      = fp
         , fileUserId    = uid
-        , fileUserName  = S8.pack $ Posix.userName uEntry
+        , fileUserName  = ""
         , fileGroupId   = gid
-        , fileGroupName = S8.pack $ Posix.groupName gEntry
+        , fileGroupName = ""
         , fileMode      = Posix.fileMode fs .&. 0o7777
         , fileSize      = fSize
         , fileType      = fType
@@ -56,22 +54,24 @@ restoreFile :: (MonadResource m) =>
                FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
     let filePath' = S8.unpack filePath
+        CTime modTimeEpoch = fileModTime
+        modTime = posixSecondsToUTCTime (fromIntegral modTimeEpoch)
     case fileType of
         FTDirectory -> do
             liftIO $ Dir.createDirectoryIfMissing False filePath'
             yield $
                 (Dir.doesDirectoryExist filePath' >>=
-                 (`when` Posix.setFileTimes filePath' fileModTime fileModTime))
-        FTSymbolicLink link ->
-            liftIO $ do
-                exist <- Posix.fileExist filePath'
-                when exist $ Dir.removeFile filePath'
-                Posix.createSymbolicLink (S8.unpack link) filePath'
+                 (`when` Dir.setModificationTime filePath' modTime))
+        -- FTSymbolicLink link ->
+        --     liftIO $ do
+        --         exist <- Posix.fileExist filePath'
+        --         when exist $ Dir.removeFile filePath'
+        --         Posix.createSymbolicLink (S8.unpack link) filePath'
         FTNormal -> do
             sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
         Posix.setSymbolicLinkOwnerAndGroup filePath' fileUserId fileGroupId
         Posix.setFileMode filePath' fileMode
-        Posix.setFileTimes filePath' fileModTime fileModTime
+        Dir.setModificationTime filePath' modTime
 

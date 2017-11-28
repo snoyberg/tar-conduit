@@ -24,6 +24,7 @@ library
   if os(windows)
       other-modules: Data.Conduit.Tar.Windows
       build-depends: directory
+                   , time
                    , unix-compat
       cpp-options:   -DWINDOWS
   else
