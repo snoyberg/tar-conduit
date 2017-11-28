@@ -10,6 +10,7 @@ module Data.Conduit.Tar
     ( -- * Basic functions
       tar
     , untar
+    , untarFinally
     , restoreFile
     , restoreFileInto
     , withEntry
@@ -28,7 +29,7 @@ module Data.Conduit.Tar
     , module Data.Conduit.Tar.Types
     ) where
 
-import Conduit
+import Conduit as C
 import Control.Exception (Exception, assert)
 import Control.Monad (unless, when, void)
 import Data.ByteString (ByteString)
@@ -322,6 +323,16 @@ untar :: MonadThrow m
       => (FileInfo -> ConduitM ByteString o m ())
       -> ConduitM ByteString o m ()
 untar inner = untarChunks .| withFileInfo inner
+
+
+-- | Just like `untar`, except for each `FileInfo` handling function can produce a finilizing
+-- action, which will be executed after the whole tarball has been processed. Very
+-- useful with `restoreFile` and `restoreFileInto`.
+untarFinally ::
+       (MonadThrow m, MonadIO m)
+    => (FileInfo -> ConduitM ByteString (IO ()) m ())
+    -> ConduitM ByteString c m ()
+untarFinally inner = (untar inner .| foldC) >>= liftIO
 
 
 --------------------------------------------------------------------------------
@@ -687,8 +698,7 @@ extractTarball :: FilePath -- ^ Filename for the tarball
 extractTarball tarfp mcd = do
     cd <- maybe getCurrentDirectory return mcd
     createDirectoryIfMissing True cd
-    as <- runConduitRes $ sourceFileBS tarfp .| untar (restoreFileInto cd) .| C.foldl (flip (:)) []
-    mapM_ id as
+    runConduitRes $ sourceFileBS tarfp .| untarFinally (restoreFileInto cd)
 
 
 -- | Restore all files into a folder. Absolute file paths will be turned into

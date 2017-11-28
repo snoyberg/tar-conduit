@@ -1,74 +1,77 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE CPP #-}
-module Data.Conduit.Tar.Windows
-    ( FileInfo
-    , getFileInfo
-    , filePath
-    , fileUserID
-    , fileUserName
-    , fileGroupID
-    , fileGroupName
-    , fileMode
-    , fileSize
-    , isDirectory
-    , isRegularFile
-    , isSymbolicLink
-    , modificationTime
-    , Posix.readSymbolicLink
-
-    , Dir.doesDirectoryExist
+module Data.Conduit.Tar.Unix
+    ( getFileInfo
+    , restoreFile
     ) where
 
+import Conduit
+import Control.Monad (when, void)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8  as S8
 import qualified System.Directory as Dir
-import qualified System.Posix.Files as Posix
-import qualified System.Posix.User as Posix
+import qualified System.PosixCompat.Files as Posix
+import qualified System.PosixCompat.User as Posix
 import System.Posix.Types
+import System.IO.Error
 import Data.Bits
+import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
 
-data FileInfo = FileInfo
-    { filePath         :: !FilePath
-    , fileUserID       :: !UserID
-    , fileUserName     :: !String
-    , fileGroupID      :: !GroupID
-    , fileGroupName    :: !String
-    , fileMode         :: !FileMode
-    , fileSize         :: !FileOffset
-    , isDirectory      :: !Bool
-    , isRegularFile    :: !Bool
-    , isSymbolicLink   :: !Bool
-    , modificationTime :: !EpochTime
-    } deriving Show
+getFileInfo :: ByteString -> IO FileInfo
+getFileInfo fp = do
+    let fp' = S8.unpack fp
+    fs <- Posix.getSymbolicLinkStatus fp'
+    let uid = Posix.fileOwner fs
+        gid = Posix.fileGroup fs
+    uEntry <- Posix.getUserEntryForID uid
+    gEntry <- Posix.getGroupEntryForID gid
+    (fType, fSize) <-
+        case () of
+            () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
+               | Posix.isSymbolicLink fs    -> do
+                     ln <- Posix.readSymbolicLink fp'
+                     return (FTSymbolicLink (S8.pack ln), 0)
+               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, 0)
+               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
+               | Posix.isDirectory fs       -> return (FTDirectory, 0)
+               | Posix.isNamedPipe fs       -> return (FTFifo, 0)
+               | otherwise                  -> error $ "Unsupported file type: " ++ fp'
+    return FileInfo
+        { filePath      = fp
+        , fileUserId    = uid
+        , fileUserName  = S8.pack $ Posix.userName uEntry
+        , fileGroupId   = gid
+        , fileGroupName = S8.pack $ Posix.groupName gEntry
+        , fileMode      = Posix.fileMode fs .&. 0o7777
+        , fileSize      = fSize
+        , fileType      = fType
+        , fileModTime   = Posix.modificationTime fs
+        }
 
-#if MIN_VERSION_directory(1,3,1)
-import System.Directory (getSymbolicLinkTarget, pathIsSymbolicLink)
+-- | Restore files onto the file system. Produces actions that will set the modification time on the
+-- directories, which can be executed after the pipeline has finished and all files have been
+-- written to disk.
+restoreFile :: (MonadResource m) =>
+               FileInfo -> ConduitM ByteString (IO ()) m ()
+restoreFile FileInfo {..} = do
+    let filePath' = S8.unpack filePath
+    case fileType of
+        FTDirectory -> do
+            liftIO $ Dir.createDirectoryIfMissing False filePath'
+            yield $
+                (Dir.doesDirectoryExist filePath' >>=
+                 (`when` Posix.setFileTimes filePath' fileModTime fileModTime))
+        FTSymbolicLink link ->
+            liftIO $ do
+                exist <- Posix.fileExist filePath'
+                when exist $ Dir.removeFile filePath'
+                Posix.createSymbolicLink (S8.unpack link) filePath'
+        FTNormal -> do
+            sinkFile filePath'
+        ty -> error $ "Unsupported tar entry type: " ++ show ty
+    liftIO $ do
+        Posix.setSymbolicLinkOwnerAndGroup filePath' fileUserId fileGroupId
+        Posix.setFileMode filePath' fileMode
+        Posix.setFileTimes filePath' fileModTime fileModTime
 
-getFileInfo :: FilePath -> IO FileInfo
-getFileInfo = undefined
-    -- fp = do
-    -- fs <- Posix.getSymbolicLinkStatus fp
-    -- let uid = Posix.fileOwner fs
-    --     gid = Posix.fileGroup fs
-    -- uEntry <- Posix.getUserEntryForID uid
-    -- gEntry <- Posix.getGroupEntryForID gid
-    -- return FileInfo
-    --     { filePath         = fp
-    --     , fileUserID       = uid
-    --     , fileUserName     = Posix.userName uEntry
-    --     , fileGroupID      = gid
-    --     , fileGroupName    = Posix.groupName gEntry
-    --     , fileMode         = Posix.fileMode fs .&. 0o7777
-    --     , fileSize         = Posix.fileSize fs
-    --     , modificationTime = Posix.modificationTime fs
-    --     , isSymbolicLink   = Posix.isSymbolicLink fs
-    --     , isDirectory      = Posix.isDirectory fs
-    --     , isRegularFile    = Posix.isRegularFile fs
-    --     }
-
-readSymbolicLink = getSymbolicLinkTarget
-
-#else
-getFileInfo _ =
-    error $ "Impossible happened: tar-conduit dependency on directory < 1.3.1 is not supported"
-readSymbolicLink = undefined
-pathIsSymbolicLink = undefined
-getSymbolicLinkTarget = undefined
-#endif

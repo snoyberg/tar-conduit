@@ -18,7 +18,6 @@ import System.IO.Error
 import Data.Bits
 import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
 
-
 getFileInfo :: ByteString -> IO FileInfo
 getFileInfo fp = do
     fs <- Posix.getSymbolicLinkStatus fp
@@ -49,7 +48,9 @@ getFileInfo fp = do
         , fileModTime   = Posix.modificationTime fs
         }
 
-
+-- | Restore files onto the file system. Produces actions that will set the modification time on the
+-- directories, which can be executed after the pipeline has finished and all files have been
+-- written to disk.
 restoreFile :: (MonadResource m) =>
                FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
@@ -69,6 +70,6 @@ restoreFile FileInfo {..} = do
             sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
-        Posix.setOwnerAndGroup filePath fileUserId fileGroupId
+        Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
         Posix.setFileMode filePath fileMode
         Posix.setFileTimes filePath fileModTime fileModTime
