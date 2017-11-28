@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE CPP #-}
 module Data.Conduit.Tar.Windows
     ( getFileInfo
     , restoreFile
@@ -8,20 +7,16 @@ module Data.Conduit.Tar.Windows
 
 import Conduit
 import Control.Monad (when, void)
-import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as S8
 import qualified System.Directory as Dir
 import qualified System.PosixCompat.Files as Posix
 import qualified System.PosixCompat.User as Posix
-import System.PosixCompat.Types
-import System.IO.Error
 import Data.Bits
 import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
-import Data.Time
 import Data.Time.Clock.POSIX
 import Foreign.C.Types (CTime(..))
 
-getFileInfo :: ByteString -> IO FileInfo
+getFileInfo :: S8.ByteString -> IO FileInfo
 getFileInfo fp = do
     let fp' = S8.unpack fp
     fs <- Posix.getSymbolicLinkStatus fp'
@@ -48,7 +43,7 @@ getFileInfo fp = do
 -- directories, which can be executed after the pipeline has finished and all files have been
 -- written to disk.
 restoreFile :: (MonadResource m) =>
-               FileInfo -> ConduitM ByteString (IO ()) m ()
+               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
     let filePath' = S8.unpack filePath
         CTime modTimeEpoch = fileModTime

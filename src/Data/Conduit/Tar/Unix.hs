@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE CPP #-}
 module Data.Conduit.Tar.Unix
     ( getFileInfo
     , restoreFile
@@ -14,7 +13,6 @@ import qualified System.Directory as Dir
 import qualified System.Posix.Files.ByteString as Posix
 import qualified System.Posix.User as Posix
 import System.Posix.Types
-import System.IO.Error
 import Data.Bits
 import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
 
