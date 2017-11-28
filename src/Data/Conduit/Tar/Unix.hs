@@ -66,8 +66,7 @@ restoreFile FileInfo {..} = do
                 exist <- Posix.fileExist filePath
                 when exist $ Dir.removeFile filePath'
                 Posix.createSymbolicLink link filePath
-        FTNormal -> do
-            sinkFile filePath'
+        FTNormal -> sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
         Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
     ( Header(..)
@@ -17,9 +18,14 @@ module Data.Conduit.Tar.Types
 import Control.Exception (Exception)
 import Data.ByteString (ByteString)
 import Data.ByteString.Short (ShortByteString)
-import System.PosixCompat.Types
 import Data.Typeable
 import Data.Word
+
+#if WINDOWS
+import System.PosixCompat.Types
+#else
+import System.Posix.Types
+#endif
 
 data FileType
     = FTNormal

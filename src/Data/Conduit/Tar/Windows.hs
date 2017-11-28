@@ -30,9 +30,6 @@ getFileInfo fp = do
     (fType, fSize) <-
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
-               -- | Posix.isSymbolicLink fs    -> do
-               --       ln <- Posix.readSymbolicLink fp'
-               --       return (FTSymbolicLink (S8.pack ln), 0)
                | Posix.isDirectory fs       -> return (FTDirectory, 0)
                | otherwise                  -> error $ "Unsupported file type: " ++ fp'
     return FileInfo
@@ -62,13 +59,7 @@ restoreFile FileInfo {..} = do
             yield $
                 (Dir.doesDirectoryExist filePath' >>=
                  (`when` Dir.setModificationTime filePath' modTime))
-        -- FTSymbolicLink link ->
-        --     liftIO $ do
-        --         exist <- Posix.fileExist filePath'
-        --         when exist $ Dir.removeFile filePath'
-        --         Posix.createSymbolicLink (S8.unpack link) filePath'
-        FTNormal -> do
-            sinkFile filePath'
+        FTNormal -> sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
         Posix.setSymbolicLinkOwnerAndGroup filePath' fileUserId fileGroupId
