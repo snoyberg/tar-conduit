@@ -24,7 +24,7 @@ import Data.Word
 data FileType
     = FTNormal
     | FTHardLink
-    | FTSymbolicLink !FilePath
+    | FTSymbolicLink !ByteString
     | FTCharacterSpecial
     | FTBlockSpecial
     | FTDirectory
@@ -45,7 +45,7 @@ data FileInfo = FileInfo
                                   -- and `FTDirectory` are the only ones
                                   -- supported for now
     , fileModTime   :: !EpochTime -- ^ File modification timestamp
-    } deriving Show
+    } deriving (Show, Eq)
 
 
 data Header = Header

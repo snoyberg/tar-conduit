@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE CPP #-}
 module Data.Conduit.Tar.Unix
@@ -6,11 +7,11 @@ module Data.Conduit.Tar.Unix
     ) where
 
 import Conduit
-import Control.Monad (when)
+import Control.Monad (when, void)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8  as S8
 import qualified System.Directory as Dir
-import qualified System.Posix.Files as Posix
+import qualified System.Posix.Files.ByteString as Posix
 import qualified System.Posix.User as Posix
 import System.Posix.Types
 import System.IO.Error
@@ -18,7 +19,7 @@ import Data.Bits
 import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
 
 
-getFileInfo :: FilePath -> IO FileInfo
+getFileInfo :: ByteString -> IO FileInfo
 getFileInfo fp = do
     fs <- Posix.getSymbolicLinkStatus fp
     let uid = Posix.fileOwner fs
@@ -35,9 +36,9 @@ getFileInfo fp = do
                | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
                | Posix.isDirectory fs       -> return (FTDirectory, 0)
                | Posix.isNamedPipe fs       -> return (FTFifo, 0)
-               | otherwise                  -> error $ "Unsupported file type: " ++ fp
+               | otherwise                  -> error $ "Unsupported file type: " ++ S8.unpack fp
     return FileInfo
-        { filePath      = S8.pack fp
+        { filePath      = fp
         , fileUserId    = uid
         , fileUserName  = S8.pack $ Posix.userName uEntry
         , fileGroupId   = gid
@@ -50,20 +51,24 @@ getFileInfo fp = do
 
 
 restoreFile :: (MonadResource m) =>
-               FileInfo -> ConduitM ByteString o m ()
+               FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
     let filePath' = S8.unpack filePath
     case fileType of
-        FTDirectory -> liftIO $ Dir.createDirectoryIfMissing False filePath'
+        FTDirectory -> do
+            liftIO $ Dir.createDirectoryIfMissing False filePath'
+            yield $
+                (Dir.doesDirectoryExist filePath' >>=
+                 (`when` Posix.setFileTimes filePath fileModTime fileModTime))
         FTSymbolicLink link ->
             liftIO $ do
-                exist <- Posix.fileExist filePath'
+                exist <- Posix.fileExist filePath
                 when exist $ Dir.removeFile filePath'
-                Posix.createSymbolicLink link filePath'
+                Posix.createSymbolicLink link filePath
         FTNormal -> do
             sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
-        Posix.setOwnerAndGroup filePath' fileUserId fileGroupId
-        Posix.setFileMode filePath' fileMode
-        Posix.setFileTimes filePath' fileModTime fileModTime
+        Posix.setOwnerAndGroup filePath fileUserId fileGroupId
+        Posix.setFileMode filePath fileMode
+        Posix.setFileTimes filePath fileModTime fileModTime
