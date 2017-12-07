@@ -1,7 +1,7 @@
 name:                tar-conduit
 version:             0.2.0
-synopsis:            Parse tar files using conduit for streaming
-description:         Please see README.md
+synopsis:            Extract and create tar files using conduit for streaming
+description:         Please see README.md. This is just filler to avoid warnings.
 homepage:            https://github.com/snoyberg/tar-conduit#readme
 license:             MIT
 license-file:        LICENSE
