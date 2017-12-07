@@ -1,8 +1,8 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE BangPatterns       #-}
+{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE RecordWildCards    #-}
 {-| This module is about stream-processing tar archives. It is currently
 not very well tested. See the documentation of 'withEntries' for an usage sample.
 -}
@@ -10,7 +10,7 @@ module Data.Conduit.Tar
     ( -- * Basic functions
       tar
     , untar
-    , untarFinally
+    , untarWithFinalizers
     , restoreFile
     , restoreFileInto
     , withEntry
@@ -29,39 +29,34 @@ module Data.Conduit.Tar
     , module Data.Conduit.Tar.Types
     ) where
 
-import Conduit as C
-import Control.Exception (Exception, assert)
-import Control.Monad (unless, when, void)
-import Data.ByteString (ByteString)
-import Data.Typeable (Typeable)
-import Data.Foldable (foldr')
-import Data.Bits ((.&.))
-import qualified Data.ByteString        as S
-import Data.ByteString.Builder
-import qualified Data.ByteString.Char8  as S8
-import qualified Data.ByteString.Short  as SS
-import qualified Data.ByteString.Lazy as SL
-import qualified Data.ByteString.Unsafe as BU
-import Data.Conduit.Combinators as C (foldl)
-import Foreign.C.Types (CTime(..))
-import System.Posix.Types (CMode)
-import System.FilePath
-import System.IO
-import System.Directory  (getCurrentDirectory, createDirectoryIfMissing)
-import Data.Word (Word8)
-import Data.Int (Int64)
-import Data.ByteString.Short (ShortByteString, toShort, fromShort)
-import Data.Monoid ((<>))
+import           Conduit                  as C
+import           Control.Exception        (assert)
+import           Control.Monad            (unless, void, when)
+import           Data.ByteString          (ByteString)
+import qualified Data.ByteString          as S
+import           Data.ByteString.Builder
+import qualified Data.ByteString.Char8    as S8
+import qualified Data.ByteString.Lazy     as SL
+import           Data.ByteString.Short    (ShortByteString, fromShort, toShort)
+import qualified Data.ByteString.Short    as SS
+import qualified Data.ByteString.Unsafe   as BU
+import           Data.Foldable            (foldr')
+import           Data.Monoid              ((<>))
+import           Foreign.C.Types          (CTime (..))
+import           System.Directory         (createDirectoryIfMissing,
+                                           getCurrentDirectory)
+import           System.FilePath
+import           System.IO
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<*))
+import           Control.Applicative      ((<*))
 #endif
 
-import Data.Conduit.Tar.Types
+import           Data.Conduit.Tar.Types
 #ifdef WINDOWS
-import Data.Conduit.Tar.Windows
+import           Data.Conduit.Tar.Windows
 #else
-import Data.Conduit.Tar.Unix
+import           Data.Conduit.Tar.Unix
 #endif
 
 
@@ -157,7 +152,7 @@ untarChunks =
                         let expectedOffset = offset + 512 + headerPayloadSize h +
                                 (case 512 - (headerPayloadSize h `mod` 512) of
                                     512 -> 0
-                                    x -> x)
+                                    x   -> x)
                         assert (offset' == expectedOffset) (loop offset')
             _ -> do
                 leftover bs
@@ -206,9 +201,9 @@ payloadsConduit = do
     mx <- await
     case mx of
         Just (ChunkPayload _ bs) -> yield bs >> payloadsConduit
-        Just x@ChunkHeader {} -> leftover x
-        Just (ChunkException e) -> throwM e
-        Nothing -> return ()
+        Just x@ChunkHeader {}    -> leftover x
+        Just (ChunkException e)  -> throwM e
+        Nothing                  -> return ()
 
 
 {-| This function handles each entry of the tar archive according to the
@@ -218,13 +213,13 @@ Here is a full example function, that reads a compressed tar archive and for eac
 
 > import qualified Crypto.Hash.Conduit as CH
 > import qualified Data.Conduit.Tar    as CT
-> 
+>
 > import Conduit
 > import Crypto.Hash (Digest, SHA256)
 > import Control.Monad (when)
 > import Data.Conduit.Zlib (ungzip)
 > import Data.ByteString (ByteString)
-> 
+>
 > filedigests :: FilePath -> IO ()
 > filedigests fp = runConduitRes (  sourceFileBS fp          -- read the raw file
 >                                .| ungzip                   -- gunzip
@@ -311,6 +306,7 @@ handleGnuTarHeader h = do
                 Just c@(ChunkPayload offset _) -> do
                     leftover c
                     throwM $ InvalidHeader offset
+                Just (ChunkException exc) -> throwM exc
                 Nothing -> throwM NoMoreHeaders
         83 -> do
             payloadsConduit .| sinkNull -- discard sparse files payload
@@ -325,22 +321,25 @@ untar :: MonadThrow m
 untar inner = untarChunks .| withFileInfo inner
 
 
--- | Just like `untar`, except for each `FileInfo` handling function can produce a finilizing
--- action, which will be executed after the whole tarball has been processed. Very
--- useful with `restoreFile` and `restoreFileInto`.
-untarFinally ::
+-- | Just like `untar`, except that each `FileInfo` handling function can produce a finalizing
+-- action, which will be executed after the whole tarball has been processed. Very useful with
+-- `restoreFile` and `restoreFileInto`, since they restore direcory modification timestamps only
+-- after files have been fully written to disk.
+untarWithFinalizers ::
        (MonadThrow m, MonadIO m)
     => (FileInfo -> ConduitM ByteString (IO ()) m ())
     -> ConduitM ByteString c m ()
-untarFinally inner = (untar inner .| foldC) >>= liftIO
+untarWithFinalizers inner = (untar inner .| foldC) >>= liftIO
 
 
 --------------------------------------------------------------------------------
 -- Create a tar file -----------------------------------------------------------
 --------------------------------------------------------------------------------
 
+gnuTarMagicVersion :: ShortByteString
 gnuTarMagicVersion = toShort (S8.pack "ustar  \NUL")
 
+ustarMagicVersion :: ShortByteString
 ustarMagicVersion = toShort (S8.pack "ustar\NUL00")
 
 blockSize :: FileOffset
@@ -473,7 +472,7 @@ packHeaderNoChecksum Header {..} = do
           byteString (S.replicate 12 0)
         )
   where
-    encodeDevice 0 = return $ byteString $ S.replicate 7 0
+    encodeDevice 0     = return $ byteString $ S.replicate 7 0
     encodeDevice devid = encodeOctal 7 devid
 
 
@@ -549,12 +548,28 @@ tarPayload size header cont
 
 
 
+-- tarHeader :: MonadThrow m =>
+--              FileOffset -> ConduitM (Either Header ByteString) ByteString m FileOffset
+-- tarHeader offset = do
+--     eContent <- await
+--     case eContent of
+--         Just c@(Right _) -> do
+--             leftover c
+--             throwM $ TarCreationError "Received payload without a corresponding Header."
+--         Just (Left header) -> do
+--             packHeader header >>= yield
+--             tarPayload 0 header tarHeader
+--         Nothing -> do
+--             yield terminatorBlock
+--             return $ offset + fromIntegral (S.length terminatorBlock)
+
+
 tarFileInfo :: MonadThrow m =>
                FileOffset -> ConduitM (Either FileInfo ByteString) ByteString m FileOffset
 tarFileInfo offset = do
     eContent <- await
     case eContent of
-        Just (Right c) ->
+        Just (Right _) ->
             throwM $ TarCreationError "Received payload without a corresponding FileInfo."
         Just (Left fi) -> do
             eHeader <- headerFromFileInfo offset fi
@@ -604,23 +619,6 @@ tar = do
     yield terminatorBlock
     return $ offset + fromIntegral (S.length terminatorBlock)
 
-
-
-
-tarHeader :: MonadThrow m =>
-             FileOffset -> ConduitM (Either Header ByteString) ByteString m FileOffset
-tarHeader offset = do
-    eContent <- await
-    case eContent of
-        Just c@(Right _) -> do
-            leftover c
-            throwM $ TarCreationError "Received payload without a corresponding Header."
-        Just (Left header) -> do
-            packHeader header >>= yield
-            tarPayload 0 header tarHeader
-        Nothing -> do
-            yield terminatorBlock
-            return $ offset + fromIntegral (S.length terminatorBlock)
 
 
 -- | Turn a stream of file paths into a stream of `FileInfo` and file
@@ -698,7 +696,7 @@ extractTarball :: FilePath -- ^ Filename for the tarball
 extractTarball tarfp mcd = do
     cd <- maybe getCurrentDirectory return mcd
     createDirectoryIfMissing True cd
-    runConduitRes $ sourceFileBS tarfp .| untarFinally (restoreFileInto cd)
+    runConduitRes $ sourceFileBS tarfp .| untarWithFinalizers (restoreFileInto cd)
 
 
 -- | Restore all files into a folder. Absolute file paths will be turned into

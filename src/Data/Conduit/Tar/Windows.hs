@@ -1,20 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards   #-}
 module Data.Conduit.Tar.Windows
     ( getFileInfo
     , restoreFile
     ) where
 
-import Conduit
-import Control.Monad (when, void)
-import qualified Data.ByteString.Char8 as S8
-import qualified System.Directory as Dir
+import           Conduit
+import           Control.Monad            (when)
+import           Data.Bits
+import qualified Data.ByteString.Char8    as S8
+import           Data.Conduit.Tar.Types   (FileInfo (..), FileType (..))
+import           Data.Time.Clock.POSIX
+import           Foreign.C.Types          (CTime (..))
+import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
-import qualified System.PosixCompat.User as Posix
-import Data.Bits
-import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
-import Data.Time.Clock.POSIX
-import Foreign.C.Types (CTime(..))
+import qualified System.PosixCompat.User  as Posix
 
 getFileInfo :: S8.ByteString -> IO FileInfo
 getFileInfo fp = do

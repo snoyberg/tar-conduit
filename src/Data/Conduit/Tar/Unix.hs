@@ -1,22 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards   #-}
 module Data.Conduit.Tar.Unix
     ( getFileInfo
     , restoreFile
     ) where
 
-import Conduit
-import Control.Monad (when, void)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8  as S8
-import qualified System.Directory as Dir
+import           Conduit
+import           Control.Monad                 (when)
+import           Data.Bits
+import qualified Data.ByteString.Char8         as S8
+import           Data.Conduit.Tar.Types        (FileInfo (..), FileType (..))
+import qualified System.Directory              as Dir
 import qualified System.Posix.Files.ByteString as Posix
-import qualified System.Posix.User as Posix
-import System.Posix.Types
-import Data.Bits
-import Data.Conduit.Tar.Types (FileInfo(..), FileType(..))
+import qualified System.Posix.User             as Posix
 
-getFileInfo :: ByteString -> IO FileInfo
+getFileInfo :: S8.ByteString -> IO FileInfo
 getFileInfo fp = do
     fs <- Posix.getSymbolicLinkStatus fp
     let uid = Posix.fileOwner fs
@@ -50,7 +48,7 @@ getFileInfo fp = do
 -- directories, which can be executed after the pipeline has finished and all files have been
 -- written to disk.
 restoreFile :: (MonadResource m) =>
-               FileInfo -> ConduitM ByteString (IO ()) m ()
+               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
     let filePath' = S8.unpack filePath
     case fileType of

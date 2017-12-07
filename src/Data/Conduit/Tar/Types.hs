@@ -15,16 +15,16 @@ module Data.Conduit.Tar.Types
     , EpochTime
     ) where
 
-import Control.Exception (Exception)
-import Data.ByteString (ByteString)
-import Data.ByteString.Short (ShortByteString)
-import Data.Typeable
-import Data.Word
+import           Control.Exception        (Exception)
+import           Data.ByteString          (ByteString)
+import           Data.ByteString.Short    (ShortByteString)
+import           Data.Typeable
+import           Data.Word
 
 #if WINDOWS
-import System.PosixCompat.Types
+import           System.PosixCompat.Types
 #else
-import System.Posix.Types
+import           System.Posix.Types
 #endif
 
 data FileType
