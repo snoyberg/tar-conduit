@@ -1,5 +1,7 @@
 #!/usr/bin/env stack
 -- stack --resolver lts-7.5 exec --package tar-conduit --package conduit-extra --package cryptonite-conduit -- ghc -O2 -threaded
+module Main where
+
 import qualified Crypto.Hash.Conduit as CH
 import qualified Data.Conduit.Tar    as CT
 
@@ -24,6 +26,4 @@ filedigests fp = runConduitRes (  sourceFileBS fp          -- read the raw file
             yield (CT.headerFilePath hdr, hash)
 
 main :: IO ()
-main = do
-    [fp] <- getArgs
-    filedigests fp
+main = getArgs >>= mapM_ filedigests

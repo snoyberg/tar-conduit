@@ -1,6 +1,5 @@
 {-# LANGUAGE BangPatterns       #-}
 {-# LANGUAGE CPP                #-}
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
 {-| This module is about stream-processing tar archives. It is currently
@@ -58,7 +57,6 @@ import           Data.Conduit.Tar.Windows
 #else
 import           Data.Conduit.Tar.Unix
 #endif
-
 
 
 headerFilePath :: Header -> FilePath

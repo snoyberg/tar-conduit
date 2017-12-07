@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE CPP #-}
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
