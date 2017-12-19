@@ -8,6 +8,7 @@ not very well tested. See the documentation of 'withEntries' for an usage sample
 module Data.Conduit.Tar
     ( -- * Basic functions
       tar
+    , tarEntries
     , untar
     , untarWithFinalizers
     , restoreFile
@@ -246,13 +247,18 @@ withEntries :: MonadThrow m
 withEntries = peekForever . withEntry
 
 
--- | Process a single tar entry. See 'withEntries' for a more low level tar processing. Currently
--- this function has full suppoort of ustar format and a minimal support for GNU tar:
+-- | Extract a tarball, similarly to `withEntries`, but instead of dealing directly with tar format,
+-- this conduit allows you to work directly on file abstractions `FileInfo`. For now support is
+-- minimal:
 --
--- * Long file names 'L'
--- * It discards sparse files 'S'
--- * Ignores any other custom header types
+-- * Old v7 tar format.
+-- * ustar: POSIX 1003.1-1988 format
+-- * and only portions of GNU format:
+--   * 'L' type - long file names, but only up to 4096 chars to prevent DoS attack
+--   * other types are simply discarded
 --
+-- /Note/ - Here is a really good reference for specifics of different tar formats:
+-- <https://github.com/libarchive/libarchive/wiki/ManPageTar5>
 withFileInfo :: MonadThrow m
              => (FileInfo -> ConduitM ByteString o m ())
              -> ConduitM TarChunk o m ()
@@ -286,8 +292,8 @@ handleGnuTarHeader h = do
             unless (0 < pSize && pSize <= 4096) $
                 throwM $
                 FileTypeError (headerPayloadOffset h) 'L' $ "Filepath is too long: " ++ show pSize
-            longFileName <-
-                SL.toStrict . SL.init . toLazyByteString <$> (payloadsConduit .| sinkBuilder)
+            longFileNameBuilder <- payloadsConduit .| sinkBuilder
+            let longFileName = SL.toStrict . SL.init . toLazyByteString $ longFileNameBuilder
             mcNext <- await
             case mcNext of
                 Just (ChunkHeader nh) -> do
@@ -312,7 +318,7 @@ handleGnuTarHeader h = do
         _ -> return ()
 
 
--- | Extract tarball
+-- | Just like `withFileInfo`, but works directly on the stream of bytes.
 untar :: MonadThrow m
       => (FileInfo -> ConduitM ByteString o m ())
       -> ConduitM ByteString o m ()
@@ -320,14 +326,16 @@ untar inner = untarChunks .| withFileInfo inner
 
 
 -- | Just like `untar`, except that each `FileInfo` handling function can produce a finalizing
--- action, which will be executed after the whole tarball has been processed. Very useful with
--- `restoreFile` and `restoreFileInto`, since they restore direcory modification timestamps only
--- after files have been fully written to disk.
+-- action, all of which will be executed after the whole tarball has been processed in the opposite
+-- order. Very useful with `restoreFile` and `restoreFileInto`, since they restore direcory
+-- modification timestamps only after files have been fully written to disk.
 untarWithFinalizers ::
        (MonadThrow m, MonadIO m)
     => (FileInfo -> ConduitM ByteString (IO ()) m ())
     -> ConduitM ByteString c m ()
-untarWithFinalizers inner = (untar inner .| foldC) >>= liftIO
+untarWithFinalizers inner = do
+    finilizers <- untar inner .| foldlC (flip (:)) []
+    mapM_ liftIO finilizers
 
 
 --------------------------------------------------------------------------------
@@ -491,11 +499,11 @@ encodeShort !len !sbs
 
 -- | Encode a number in 8base padded with zeros. Throws `TarCreationError` when overflows.
 encodeOctal :: (Show a, Integral a, MonadThrow m) => Int -> a -> m Builder
-encodeOctal !len !val =
-    byteString . S.reverse <$>
-    case S.unfoldrN len toOctal val of
+encodeOctal !len !val = do
+    enc <- case S.unfoldrN len toOctal val of
         (valStr, Just 0) -> return valStr
         over -> throwM $ TarCreationError $ "<encodeOctal>: Tar value overflow: " ++ show over
+    return (byteString $ S.reverse enc)
   where
     toOctal x =
         let !(q, r) = x `quotRem` 8
@@ -546,20 +554,21 @@ tarPayload size header cont
 
 
 
--- tarHeader :: MonadThrow m =>
---              FileOffset -> ConduitM (Either Header ByteString) ByteString m FileOffset
--- tarHeader offset = do
---     eContent <- await
---     case eContent of
---         Just c@(Right _) -> do
---             leftover c
---             throwM $ TarCreationError "Received payload without a corresponding Header."
---         Just (Left header) -> do
---             packHeader header >>= yield
---             tarPayload 0 header tarHeader
---         Nothing -> do
---             yield terminatorBlock
---             return $ offset + fromIntegral (S.length terminatorBlock)
+tarHeader :: MonadThrow m =>
+             FileOffset -> ConduitM (Either Header ByteString) ByteString m FileOffset
+tarHeader offset = do
+    eContent <- await
+    case eContent of
+        Just c@(Right _) -> do
+            leftover c
+            throwM $ TarCreationError "Received payload without a corresponding Header."
+        Just (Left header) -> do
+            packHeader header >>= yield
+            tarPayload 0 header tarHeader
+        Nothing -> do
+            yield terminatorBlock
+            return $ offset + fromIntegral (S.length terminatorBlock)
+
 
 
 tarFileInfo :: MonadThrow m =>
@@ -614,6 +623,16 @@ tar :: MonadResource m =>
        ConduitM (Either FileInfo ByteString) ByteString m FileOffset
 tar = do
     offset <- tarFileInfo 0
+    yield terminatorBlock
+    return $ offset + fromIntegral (S.length terminatorBlock)
+
+
+-- | Create a tar archive by suppying `Header`, which must be immediately
+-- followed by the file content, whenever its type is `FTNormal`.
+tarEntries :: MonadResource m =>
+            ConduitM (Either Header ByteString) ByteString m FileOffset
+tarEntries = do
+    offset <- tarHeader 0
     yield terminatorBlock
     return $ offset + fromIntegral (S.length terminatorBlock)
 
@@ -703,4 +722,5 @@ restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFileInto cd fi =
     restoreFile fi {filePath = S8.pack (cd </> makeRelative "/" (S8.unpack (filePath fi)))}
+
 

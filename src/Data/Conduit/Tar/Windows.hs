@@ -14,7 +14,6 @@ import           Data.Time.Clock.POSIX
 import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
-import qualified System.PosixCompat.User  as Posix
 
 getFileInfo :: S8.ByteString -> IO FileInfo
 getFileInfo fp = do
@@ -57,7 +56,7 @@ restoreFile FileInfo {..} = do
         FTNormal -> sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
+        Dir.setModificationTime filePath' modTime
         Posix.setSymbolicLinkOwnerAndGroup filePath' fileUserId fileGroupId
         Posix.setFileMode filePath' fileMode
-        Dir.setModificationTime filePath' modTime
 

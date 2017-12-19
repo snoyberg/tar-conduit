@@ -13,29 +13,35 @@ import System.FilePath
 import Control.Exception
 
 main :: IO ()
-main =
+main = do
+    let baseTmp = "tar-conduit-tests"
+    isStack <- doesDirectoryExist ".stack-work"
+    let testPaths =
+            ["src", "./tests", "README.md", "ChangeLog.md", "LICENSE"] ++
+            if isStack
+                then [".stack-work", "./sample"]
+                else []
     hspec $ do
-        let stackWorkDir = ".stack-work"
         describe "tar/untar" $ do
             let tarUntarContent dir =
                     runConduitRes $
                     yield dir .| void tarFilePath .| untar (const (foldC >>= yield)) .| foldC
             before (collectContent "src") $ it "content" (tarUntarContent "src" `shouldReturn`)
         describe "tar/untar/tar" $ do
-            around (withTempTarFiles stackWorkDir) $
+            around (withTempTarFiles baseTmp) $
                 it "structure" $ \(fpIn, hIn, outDir, fpOut) -> do
-                    writeTarball hIn [stackWorkDir]
+                    writeTarball hIn testPaths
                     hClose hIn
                     extractTarball fpIn (Just outDir)
                     curDir <- getCurrentDirectory
                     finally
-                        (setCurrentDirectory outDir >> createTarball fpOut [stackWorkDir])
+                        (setCurrentDirectory outDir >> createTarball fpOut testPaths)
                         (setCurrentDirectory curDir)
                     tb1 <- readTarball fpIn
                     tb2 <- readTarball fpOut
                     P.length tb1 `shouldBe` P.length tb2
-                    zipWithM_ shouldBe (fst <$> tb2) (fst <$> tb1)
-                    zipWithM_ shouldBe (snd <$> tb2) (snd <$> tb1)
+                    zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
+                    zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
 
 withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c) -> IO c
 withTempTarFiles base =

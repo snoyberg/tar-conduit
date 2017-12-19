@@ -65,6 +65,6 @@ restoreFile FileInfo {..} = do
         FTNormal -> sinkFile filePath'
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
+        Posix.setFileTimes filePath fileModTime fileModTime
         Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
         Posix.setFileMode filePath fileMode
-        Posix.setFileTimes filePath fileModTime fileModTime
