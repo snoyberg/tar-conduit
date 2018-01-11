@@ -64,7 +64,7 @@ test-suite space
                , conduit-combinators
                , conduit
 
-test-suite time
+benchmark time
   default-language:    Haskell2010
   type: exitcode-stdio-1.0
   ghc-options: -O2
