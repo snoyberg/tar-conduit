@@ -639,7 +639,7 @@ tarEntries = do
 
 
 -- | Turn a stream of file paths into a stream of `FileInfo` and file
--- conent. All paths will be decended into recursively.
+-- content. All paths will be decended into recursively.
 filePathConduit :: MonadResource m =>
                    ConduitM FilePath (Either FileInfo ByteString) m ()
 filePathConduit = do
