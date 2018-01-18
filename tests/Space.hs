@@ -28,15 +28,9 @@ main = do
   mainWith
     (do setColumns [Case, Allocated, Max, Live, GCs, Check]
         sequence_
-          [ validateAction
+          [ action
             ("tar " ++ show count ++ " files")
-            (const
-               (runConduitRes
-                  (CL.sourceList files .| void Tar.tar .| CL.sinkNull)))
-            ()
-            (\w -> do
-               guard (weightMaxBytes w > 50000)
-               pure "Exceeded maximum bytes!")
+            (runConduitRes (CL.sourceList files .| void Tar.tar .| CL.sinkNull))
           | count :: Int <- [1, 10, 100, 1000, 10000]
           , let !files =
                   force
@@ -46,29 +40,19 @@ main = do
                           [1 :: Int .. count]))
           ]
         sequence_
-          [ validateAction
+          [ action
             ("tar file of " ++ show bytes ++ " bytes")
-            (const
-               (runConduitRes
-                  (CL.sourceList files .| void Tar.tar .| CL.sinkNull)))
-            ()
-            (\w -> do
-               guard
-                 (weightMaxBytes w > 50000 || weightAllocatedBytes w > 70000)
-               pure "Exceeded maximum bytes or allocated bytes!")
+            (runConduitRes (CL.sourceList files .| void Tar.tar .| CL.sinkNull))
           | bytes :: Int <- [1, 10, 100, 1000, 10000]
           , let !files = force (makeFileN "file.txt" bytes)
           ]
         sequence_
-          [ validateAction
+          [ action
             ("untar " ++ show count ++ " files")
-            (const
-               (runConduitRes
-                  (CL.sourceList files .| void Tar.tar .|
-                   void (Tar.untar (const (pure ()))) .|
-                   CL.sinkNull)))
-            ()
-            (const Nothing)
+            (runConduitRes
+               (CL.sourceList files .| void Tar.tar .|
+                void (Tar.untar (const (return ()))) .|
+                CL.sinkNull))
           | count :: Int <- [1, 10, 100, 1000, 10000]
           , let !files =
                   force
@@ -78,18 +62,12 @@ main = do
                           [1 :: Int .. count]))
           ]
         sequence_
-          [ validateAction
+          [ action
             ("untar file of " ++ show bytes ++ " bytes")
-            (const
-               (runConduitRes
-                  (CL.sourceList files .| void Tar.tar .|
-                   void (Tar.untar (const (pure ()))) .|
-                   CL.sinkNull)))
-            ()
-            (\w -> do
-               guard
-                 (weightMaxBytes w > 11000 || weightAllocatedBytes w > 61000)
-               pure "Exceeded maximum bytes or allocated bytes!")
+            (runConduitRes
+               (CL.sourceList files .| void Tar.tar .|
+                void (Tar.untar (const (return ()))) .|
+                CL.sinkNull))
           | bytes :: Int <- [1, 10, 100, 1000, 10000]
           , let !files = force (makeFileN "file.txt" bytes)
           ])
