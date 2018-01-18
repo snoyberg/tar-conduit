@@ -33,6 +33,7 @@ import System.Posix.Types (CMode)
 import Data.Word (Word8)
 import Data.Int (Int64)
 import Data.ByteString.Short (ShortByteString, toShort, fromShort)
+import qualified Data.ByteString.Short as Short
 import Data.Monoid ((<>))
 
 #if !MIN_VERSION_base(4,8,0)
@@ -58,8 +59,13 @@ data Header = Header
     deriving Show
 
 headerFilePath :: Header -> FilePath
-headerFilePath h = S8.unpack $ fromShort
-                 $ headerFileNamePrefix h <> headerFileNameSuffix h
+headerFilePath h = S8.unpack $
+    if Short.null $ headerFileNamePrefix h
+    then suffix
+    else prefix <> S8.singleton '/' <> suffix
+  where
+    prefix = fromShort (headerFileNamePrefix h)
+    suffix = fromShort (headerFileNameSuffix h)
 
 data FileType
     = FTNormal
