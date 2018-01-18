@@ -26,7 +26,9 @@ main = do
             let tarUntarContent dir =
                     runConduitRes $
                     yield dir .| void tarFilePath .| untar (const (foldC >>= yield)) .| foldC
-            before (collectContent "src") $ it "content" (tarUntarContent "src" `shouldReturn`)
+            it "content" $ do
+                c <- collectContent "src"
+                tarUntarContent "src" `shouldReturn` c
         describe "tar/untar/tar" $ do
             around (withTempTarFiles baseTmp) $
                 it "structure" $ \(fpIn, hIn, outDir, fpOut) -> do

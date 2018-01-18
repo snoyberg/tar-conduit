@@ -31,7 +31,7 @@ module Data.Conduit.Tar
 
 import           Conduit                  as C
 import           Control.Exception        (assert)
-import           Control.Monad            (unless, void, when)
+import           Control.Monad            (unless, void)
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as S
 import           Data.ByteString.Builder
@@ -262,27 +262,29 @@ withEntries = peekForever . withEntry
 withFileInfo :: MonadThrow m
              => (FileInfo -> ConduitM ByteString o m ())
              -> ConduitM TarChunk o m ()
-withFileInfo inner = do
-    mc <- await
-    case mc of
-        Nothing -> return ()
-        Just (ChunkHeader h)
-            | headerLinkIndicator h >= 55 -> do
-                when (headerMagicVersion h == gnuTarMagicVersion) $ handleGnuTarHeader h
-                withFileInfo inner
-        Just (ChunkHeader h) -> do
-            payloadsConduit .| (inner (fileInfoFromHeader h) <* sinkNull)
-            withFileInfo inner
-        Just x@(ChunkPayload offset _bs) -> do
-            leftover x
-            throwM $ UnexpectedPayload offset
-        Just (ChunkException e) -> throwM e
-
+withFileInfo inner = go
+  where
+    go = do
+        mc <- await
+        case mc of
+            Nothing -> return ()
+            Just (ChunkHeader h)
+                | headerLinkIndicator h >= 55 -> do
+                    if (headerMagicVersion h == gnuTarMagicVersion)
+                        then handleGnuTarHeader h .| go
+                        else go
+            Just (ChunkHeader h) -> do
+                payloadsConduit .| (inner (fileInfoFromHeader h) <* sinkNull)
+                go
+            Just x@(ChunkPayload offset _bs) -> do
+                leftover x
+                throwM $ UnexpectedPayload offset
+            Just (ChunkException e) -> throwM e
 
 -- | Take care of custom GNU tar format.
 handleGnuTarHeader :: MonadThrow m
                    => Header
-                   -> ConduitM TarChunk o m ()
+                   -> ConduitM TarChunk TarChunk m ()
 handleGnuTarHeader h = do
     case headerLinkIndicator h of
         76 -> do
@@ -301,7 +303,7 @@ handleGnuTarHeader h = do
                         throwM $
                         FileTypeError (headerPayloadOffset nh) 'L' $
                         "Long filename doesn't match the original."
-                    leftover
+                    yield
                         (ChunkHeader $
                          nh
                          { headerFileNameSuffix = toShort longFileName
@@ -316,6 +318,7 @@ handleGnuTarHeader h = do
             payloadsConduit .| sinkNull -- discard sparse files payload
             -- TODO : Implement restoring of sparse files
         _ -> return ()
+
 
 
 -- | Just like `withFileInfo`, but works directly on the stream of bytes.
@@ -334,8 +337,8 @@ untarWithFinalizers ::
     => (FileInfo -> ConduitM ByteString (IO ()) m ())
     -> ConduitM ByteString c m ()
 untarWithFinalizers inner = do
-    finilizers <- untar inner .| foldlC (flip (:)) []
-    mapM_ liftIO finilizers
+    finilizers <- untar inner .| foldlC (>>) (return ())
+    liftIO finilizers
 
 
 --------------------------------------------------------------------------------
@@ -486,28 +489,30 @@ packHeaderNoChecksum Header {..} = do
 -- shorter, but throwing `TarCreationError` if it is longer.
 encodeShort :: MonadThrow m => Int -> ShortByteString -> m Builder
 encodeShort !len !sbs
-    | lenShort <= len = return $ byteString $ fst $ S.unfoldrN len maybeShort 0
+    | lenShort <= len = return $ shortByteString sbs <> byteString (S.replicate (len - lenShort) 0)
     | otherwise =
         throwM $
         TarCreationError $ "Can't fit '" ++ S8.unpack (fromShort sbs) ++ "' into the tar header"
   where
     lenShort = SS.length sbs
-    maybeShort !i
-        | i < lenShort = Just (SS.index sbs i, i + 1)
-        | otherwise = Just (0, i + 1)
 
 
 -- | Encode a number in 8base padded with zeros. Throws `TarCreationError` when overflows.
 encodeOctal :: (Show a, Integral a, MonadThrow m) => Int -> a -> m Builder
-encodeOctal !len !val = do
-    enc <- case S.unfoldrN len toOctal val of
-        (valStr, Just 0) -> return valStr
-        over -> throwM $ TarCreationError $ "<encodeOctal>: Tar value overflow: " ++ show over
-    return (byteString $ S.reverse enc)
+encodeOctal !len !val = go 0 val mempty
   where
-    toOctal x =
-        let !(q, r) = x `quotRem` 8
-        in Just (fromIntegral r + 48, q)
+    go !n !cur !acc
+      | cur == 0 =
+        if n < len
+          then return $ byteString (S.replicate (len - n) 48) <> acc
+          else return acc
+      | n < len =
+        let !(q, r) = cur `quotRem` 8
+        in go (n + 1) q (word8 (fromIntegral r + 48) <> acc)
+      | otherwise =
+        throwM $
+        TarCreationError $
+        "<encodeOctal>: Tar value overflow (for maxLen " ++ show len ++ "): " ++ show val
 
 
 
@@ -534,22 +539,24 @@ tarPayload :: MonadThrow m =>
            -> ConduitM (Either a ByteString) ByteString m FileOffset
 tarPayload size header cont
     | size == headerPayloadSize header = cont (headerOffset header + blockSize)
-    | otherwise = do
+    | otherwise = go size
+  where
+    go prevSize = do
         eContent <- await
         case eContent of
             Just h@(Left _) -> do
                 leftover h
                 throwM $ TarCreationError "Not enough payload."
             Just (Right content) -> do
-                let size' = size + fromIntegral (S.length content)
-                unless (size' <= headerPayloadSize header) $
+                let nextSize = prevSize + fromIntegral (S.length content)
+                unless (nextSize <= headerPayloadSize header) $
                     throwM $ TarCreationError "Too much payload"
                 yield content
-                if size' == headerPayloadSize header
+                if nextSize == headerPayloadSize header
                     then do
-                        paddedSize <- yieldNulPadding size'
+                        paddedSize <- yieldNulPadding nextSize
                         cont (headerPayloadOffset header + paddedSize)
-                    else tarPayload size' header cont
+                    else go nextSize
             Nothing -> throwM $ TarCreationError "Stream finished abruptly. Not enough payload."
 
 
@@ -615,10 +622,11 @@ tarFileInfo offset = do
 
 
 
-
-
--- | Create a tar archive by suppying `FileInfo`, which must be immediately
--- followed by the file content, whenever its type is `FTNormal`.
+-- | Create a tar archive by suppying a stream of `Left` `FileInfo`s. Whenever a
+-- file type is `FTNormal`, it must be immediately followed by its content as
+-- `Right` `ByteString`. The produced `ByteString` is in the raw tar format and
+-- is properly terminated at the end, therefore it should no be modified
+-- afterwards. Returned is the total size of the bytestring as a `FileOffset`.
 tar :: MonadResource m =>
        ConduitM (Either FileInfo ByteString) ByteString m FileOffset
 tar = do
@@ -627,8 +635,9 @@ tar = do
     return $ offset + fromIntegral (S.length terminatorBlock)
 
 
--- | Create a tar archive by suppying `Header`, which must be immediately
--- followed by the file content, whenever its type is `FTNormal`.
+-- | Just like `tar`, except gives you the ability to work at a lower `Header`
+-- level, versus more user friendly `FileInfo`. A deeper understanding of tar
+-- format is necessary in order to work directly with `Header`s.
 tarEntries :: MonadResource m =>
             ConduitM (Either Header ByteString) ByteString m FileOffset
 tarEntries = do
@@ -648,27 +657,31 @@ filePathConduit = do
         Just fp -> do
             fi <- liftIO $ getFileInfo $ S8.pack fp
             case fileType fi of
-                    FTNormal         -> do
-                        yield (Left fi)
-                        sourceFile (S8.unpack (filePath fi)) .| mapC Right
-                    FTSymbolicLink _ ->
-                        yield (Left fi)
-                    FTDirectory      -> do
-                        yield (Left fi)
-                        sourceDirectory (S8.unpack (filePath fi)) .| filePathConduit
-                    fty              -> do
-                        leftover fp
-                        throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
+                FTNormal -> do
+                    yield (Left fi)
+                    sourceFile (S8.unpack (filePath fi)) .| mapC Right
+                FTSymbolicLink _ -> yield (Left fi)
+                FTDirectory -> do
+                    yield (Left fi)
+                    sourceDirectory (S8.unpack (filePath fi)) .| filePathConduit
+                fty -> do
+                    leftover fp
+                    throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
             filePathConduit
         Nothing -> return ()
 
 
--- | Recursively tar all of the files and directories.
+-- | Recursively tar all of the files and directories. There will be no
+-- conversion between relative and absolute paths, so just like with GNU @tar@
+-- cli tool, it may be necessary to `setCurrentDirectory` in order to get the
+-- paths relative. Using `filePathConduit` directly, while modifying the
+-- `filePath`, would be another approach to handling the file paths.
 tarFilePath :: MonadResource m => ConduitM FilePath ByteString m FileOffset
 tarFilePath = filePathConduit .| tar
 
 
-
+-- | Uses `tarFilePath` to create a tarball, that will recursively include the
+-- supplied list of all the files and directories
 createTarball :: FilePath -- ^ File name for the tarball
               -> [FilePath] -- ^ List of files and directories to include in the tarball
               -> IO ()
@@ -691,8 +704,11 @@ fileInfoFromHeader :: Header -> FileInfo
 fileInfoFromHeader header@(Header {..}) =
     FileInfo
     { filePath = if SS.length headerFileNamePrefix > 0
-                 then fromShort headerFileNamePrefix <> pathSeparatorS <>
-                      fromShort headerFileNameSuffix
+                 then S.concat
+                      [ fromShort headerFileNamePrefix
+                      , pathSeparatorS
+                      , fromShort headerFileNameSuffix
+                      ]
                  else fromShort headerFileNameSuffix
     , fileUserId = headerOwnerId
     , fileUserName = fromShort headerOwnerName
@@ -705,7 +721,7 @@ fileInfoFromHeader header@(Header {..}) =
     }
 
 
-
+-- | Extract a tarball.
 extractTarball :: FilePath -- ^ Filename for the tarball
                -> Maybe FilePath -- ^ Folder where tarball should be extract
                                  -- to. Default is the current path
