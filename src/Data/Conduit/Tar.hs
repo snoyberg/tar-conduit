@@ -33,6 +33,7 @@ import System.Posix.Types (CMode)
 import Data.Word (Word8)
 import Data.Int (Int64)
 import Data.ByteString.Short (ShortByteString, toShort, fromShort)
+import qualified Data.ByteString.Short as Short
 import Data.Monoid ((<>))
 
 #if !MIN_VERSION_base(4,8,0)
@@ -58,8 +59,13 @@ data Header = Header
     deriving Show
 
 headerFilePath :: Header -> FilePath
-headerFilePath h = S8.unpack $ fromShort
-                 $ headerFileNamePrefix h <> headerFileNameSuffix h
+headerFilePath h = S8.unpack $
+    if Short.null $ headerFileNamePrefix h
+    then suffix
+    else prefix <> S8.singleton '/' <> suffix
+  where
+    prefix = fromShort (headerFileNamePrefix h)
+    suffix = fromShort (headerFileNameSuffix h)
 
 data FileType
     = FTNormal
@@ -119,26 +125,41 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
     return Header
         { headerOffset         = offset
         , headerPayloadOffset  = offset + 512
-        , headerFileNameSuffix = getShort 0 100
-        , headerFileMode       = getOctal 100 8
-        , headerOwnerId        = getOctal 108 8
-        , headerGroupId        = getOctal 116 8
-        , headerPayloadSize    = getOctal 124 12
-        , headerTime           = getOctal 136 12
+        , headerFileNameSuffix = short headerFileNameSuffix'
+        , headerFileMode       = octal headerFileMode'
+        , headerOwnerId        = octal headerOwnerId'
+        , headerGroupId        = octal headerGroupId'
+        , headerPayloadSize    = octal headerPayloadSize'
+        , headerTime           = octal headerTime'
         , headerLinkIndicator  = BU.unsafeIndex bs 156
-        , headerOwnerName      = getShort 265 32
-        , headerGroupName      = getShort 297 32
-        , headerDeviceMajor    = getOctal 329 8
-        , headerDeviceMinor    = getOctal 337 8
-        , headerFileNamePrefix = getShort 345 155
+        , headerOwnerName      = short headerOwnerName'
+        , headerGroupName      = short headerGroupName'
+        , headerDeviceMajor    = octal headerDeviceMajor'
+        , headerDeviceMinor    = octal headerDeviceMinor'
+        , headerFileNamePrefix = short headerFileNamePrefix'
         }
   where
     bsum :: ByteString -> Int
     bsum = S.foldl' (\c n -> c + fromIntegral n) 0
 
-    getShort off len = toShort $ S.takeWhile (/= 0) $ S.take len $ S.drop off bs
+    rest1 = bs
+    (headerFileNameSuffix', rest2) = S.splitAt 100 rest1
+    (headerFileMode',       rest3) = S.splitAt 8   rest2
+    (headerOwnerId',        rest4) = S.splitAt 8   rest3
+    (headerGroupId',        rest5) = S.splitAt 8   rest4
+    (headerPayloadSize',    rest6) = S.splitAt 12  rest5
+    headerTime'                    = S.take    12  rest6
 
-    getOctal off len = parseOctal $ S.take len $ S.drop off bs
+
+    (headerOwnerName',   bs1) = S.splitAt 32  $ S.drop 265 bs
+    (headerGroupName',   bs2) = S.splitAt 32  bs1
+    (headerDeviceMajor', bs3) = S.splitAt 8   bs2
+    (headerDeviceMinor', bs4) = S.splitAt 8   bs3
+    headerFileNamePrefix'     = S.take    155 bs4
+
+    short = toShort . S.takeWhile (/= 0)
+    octal :: Integral i => ByteString -> i
+    octal = parseOctal
 
     parseOctal :: Integral i => ByteString -> i
     parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
