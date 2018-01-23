@@ -41,7 +41,7 @@ import           Data.ByteString.Short    (ShortByteString, fromShort, toShort)
 import qualified Data.ByteString.Short    as SS
 import qualified Data.ByteString.Unsafe   as BU
 import           Data.Foldable            (foldr')
-import           Data.Monoid              ((<>))
+import           Data.Monoid              ((<>), mempty)
 import           Foreign.C.Types          (CTime (..))
 import           System.Directory         (createDirectoryIfMissing,
                                            getCurrentDirectory)
@@ -60,9 +60,15 @@ import           Data.Conduit.Tar.Unix
 #endif
 
 
+headerFilePathBS :: Header -> S.ByteString
+headerFilePathBS Header {..} =
+    if SS.length headerFileNamePrefix > 0
+        then S.concat
+                 [fromShort headerFileNamePrefix, pathSeparatorS, fromShort headerFileNameSuffix]
+        else fromShort headerFileNameSuffix
+
 headerFilePath :: Header -> FilePath
-headerFilePath h = S8.unpack $ fromShort
-                 $ headerFileNamePrefix h <> headerFileNameSuffix h
+headerFilePath = S8.unpack . headerFilePathBS
 
 
 headerFileType :: Header -> FileType
@@ -703,13 +709,7 @@ pathSeparatorS = S8.singleton pathSeparator
 fileInfoFromHeader :: Header -> FileInfo
 fileInfoFromHeader header@(Header {..}) =
     FileInfo
-    { filePath = if SS.length headerFileNamePrefix > 0
-                 then S.concat
-                      [ fromShort headerFileNamePrefix
-                      , pathSeparatorS
-                      , fromShort headerFileNameSuffix
-                      ]
-                 else fromShort headerFileNameSuffix
+    { filePath = headerFilePathBS header
     , fileUserId = headerOwnerId
     , fileUserName = fromShort headerOwnerName
     , fileGroupId = headerGroupId
