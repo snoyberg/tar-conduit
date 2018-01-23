@@ -1,4 +1,4 @@
-## 0.2.0 - 2017-12-19
+## 0.2.0 - 2018-01-23
 
  * Implemented tarball creation
  * Introduced `FileInfo` datatype that makes it easier to work with archives by automatically
