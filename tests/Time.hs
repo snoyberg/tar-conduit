@@ -53,7 +53,7 @@ main =
            (nfIO
               (runConduitRes
                  (CL.sourceList files .| void Tar.tar .|
-                  void (Tar.untar (const (pure ()))) .|
+                  void (Tar.untar (const (return ()))) .|
                   CL.sinkNull)))
          | count :: Int <- [1, 10, 100, 1000, 10000]
          , let !files =
@@ -68,7 +68,7 @@ main =
            (nfIO
               (runConduitRes
                  (CL.sourceList files .| void Tar.tar .|
-                  void (Tar.untar (const (pure ()))) .|
+                  void (Tar.untar (const (return ()))) .|
                   CL.sinkNull)))
          | bytes :: Int <- [1, 10, 100, 1000, 10000]
          , let !files = force (makeFileN "file.txt" bytes)
