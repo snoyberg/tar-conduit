@@ -1,11 +1,12 @@
-{-# LANGUAGE PackageImports #-}
+#!/usr/bin/env stack
+-- stack --resolver lts-7.5 exec --package tar-conduit --package conduit-extra --package cryptonite-conduit -- ghc -O2 -threaded
 module Main where
 
 import qualified Crypto.Hash.Conduit as CH
 import qualified Data.Conduit.Tar    as CT
 
 import Conduit
-import "cryptohash" Crypto.Hash (Digest, SHA256)
+import Crypto.Hash (Digest, SHA256)
 import Control.Monad (when)
 import Data.Conduit.Zlib (ungzip)
 import Data.ByteString (ByteString)
