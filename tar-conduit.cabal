@@ -30,6 +30,7 @@ library
   else
       other-modules: Data.Conduit.Tar.Unix
       build-depends: directory
+                   , safe-exceptions
                    , unix
 
 test-suite tests

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,13 +8,15 @@ module Data.Conduit.Tar.Unix
     ) where
 
 import           Conduit
-import           Control.Exception
-import           Control.Monad                 (when)
+import           Control.Exception.Safe
+import           Control.Monad                 (void, when)
 import           Data.Bits
 import qualified Data.ByteString.Char8         as S8
 import           Data.Conduit.Tar.Types        (FileInfo (..), FileType (..))
+import           Foreign.C.Types               (CTime (..))
 import qualified System.Directory              as Dir
 import qualified System.Posix.Files.ByteString as Posix
+import qualified System.Posix.IO.ByteString    as Posix
 import qualified System.Posix.User             as Posix
 
 getFileInfo :: S8.ByteString -> IO FileInfo
@@ -56,20 +59,32 @@ restoreFile :: (MonadResource m) =>
                FileInfo -> ConduitM S8.ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
     let filePath' = S8.unpack filePath
+        restorePermissions = do
+            Posix.setOwnerAndGroup filePath fileUserId fileGroupId
+            Posix.setFileMode filePath fileMode
     case fileType of
         FTDirectory -> do
-            liftIO $ Dir.createDirectoryIfMissing False filePath'
+            liftIO $ do
+                Dir.createDirectoryIfMissing False filePath'
+                restorePermissions
             yield $
                 (Dir.doesDirectoryExist filePath' >>=
                  (`when` Posix.setFileTimes filePath fileModTime fileModTime))
         FTSymbolicLink link ->
             liftIO $ do
-                exist <- Posix.fileExist filePath
-                when exist $ Dir.removeFile filePath'
+                Posix.fileExist filePath >>= (`when` Dir.removeFile filePath')
                 Posix.createSymbolicLink link filePath
-        FTNormal -> sinkFile filePath'
+                Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
+                -- Try best effort in setting symbolic link modification time.
+#if MIN_VERSION_unix(2,7,0)
+                let CTime epochInt32 = fileModTime
+                    unixModTime = fromInteger (fromIntegral epochInt32)
+                void $ tryAny $ Posix.setSymbolicLinkTimesHiRes filePath unixModTime unixModTime
+#endif
+        FTNormal -> do
+            sinkFile filePath'
+            liftIO $ do
+                restorePermissions
+                Posix.setFileTimes filePath fileModTime fileModTime
         ty -> error $ "Unsupported tar entry type: " ++ show ty
-    liftIO $ do
-        Posix.setFileTimes filePath fileModTime fileModTime
-        Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
-        Posix.setFileMode filePath fileMode
+
