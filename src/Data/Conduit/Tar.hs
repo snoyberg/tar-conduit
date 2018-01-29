@@ -395,7 +395,10 @@ headerFromFileInfo :: MonadThrow m =>
                    -> m (Either TarCreateException Header)
 headerFromFileInfo offset fi = do
     unless (offset `mod` 512 == 0) $
-        throwM $ TarCreationError $ "Offset must always be a multiple of 512"
+        throwM $
+        TarCreationError $
+        "<headerFromFileInfo>: Offset must always be a multiple of 512 for file: " ++
+        S8.unpack (filePath fi)
     let (prefix, suffix) = splitPathAt 100 $ filePath fi
     if (SS.length prefix > 155)
         then return $ Left $ FileNameTooLong fi
@@ -405,7 +408,11 @@ headerFromFileInfo offset fi = do
                     FTNormal -> return (fileSize fi, SS.empty, 48)
                     FTSymbolicLink ln -> return (0, toShort ln, 50)
                     FTDirectory -> return (0, SS.empty, 53)
-                    fty -> throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
+                    fty ->
+                        throwM $
+                        TarCreationError $
+                        "<headerFromFileInfo>: Unsupported file type: " ++
+                        show fty ++ " for file: " ++ S8.unpack (filePath fi)
             return $
                 Right
                     Header
@@ -449,28 +456,28 @@ packHeader header = do
     (left, right) <- packHeaderNoChecksum header
     let sumsl :: SL.ByteString -> Int
         sumsl = SL.foldl' (\ !acc !v -> acc + fromIntegral v) 0
-    encChecksum <- encodeOctal 7 $ sumsl left + 32 * 8 + sumsl right
+    encChecksum <- encodeOctal header "checksum" 7 $ sumsl left + 32 * 8 + sumsl right
     return $
         SL.toStrict $
         toLazyByteString $ lazyByteString left <> encChecksum <> word8 0 <> lazyByteString right
 
 
 packHeaderNoChecksum :: MonadThrow m => Header -> m (SL.ByteString, SL.ByteString)
-packHeaderNoChecksum Header {..} = do
+packHeaderNoChecksum h@Header {..} = do
     let CTime headerTime' = headerTime
-    hNameSuffix <- encodeShort 100 headerFileNameSuffix
-    hFileMode <- encodeOctal 7 headerFileMode
-    hOwnerId <- encodeOctal 7 headerOwnerId
-    hGroupId <- encodeOctal 7 headerGroupId
-    hPayloadSize <- encodeOctal 11 headerPayloadSize
-    hTime <- encodeOctal 11 headerTime'
-    hLinkName <- encodeShort 100 headerLinkName
-    hMagicVersion <- encodeShort 8 headerMagicVersion
-    hOwnerName <- encodeShort 32 headerOwnerName
-    hGroupName <- encodeShort 32 headerGroupName
-    hDevMajor <- encodeDevice headerDeviceMajor
-    hDevMinor <- encodeDevice headerDeviceMinor
-    hNamePrefix <- encodeShort 155 headerFileNamePrefix
+    hNameSuffix <- encodeShort h "nameSuffix" 100 headerFileNameSuffix
+    hFileMode <- encodeOctal h "fileMode" 7 headerFileMode
+    hOwnerId <- encodeOctal h "ownerId" 7 headerOwnerId
+    hGroupId <- encodeOctal h "groupId" 7 headerGroupId
+    hPayloadSize <- encodeOctal h "payloadSize" 11 headerPayloadSize
+    hTime <- encodeOctal h "time" 11 headerTime'
+    hLinkName <- encodeShort h "linkName" 100 headerLinkName
+    hMagicVersion <- encodeShort h "magicVersion" 8 headerMagicVersion
+    hOwnerName <- encodeShort h "ownerName" 32 headerOwnerName
+    hGroupName <- encodeShort h "groupName" 32 headerGroupName
+    hDevMajor <- encodeDevice "Major" headerDeviceMajor
+    hDevMinor <- encodeDevice "Minor" headerDeviceMinor
+    hNamePrefix <- encodeShort h "namePrefix" 155 headerFileNamePrefix
     return
         ( toLazyByteString $
           hNameSuffix <>
@@ -491,25 +498,28 @@ packHeaderNoChecksum Header {..} = do
           byteString (S.replicate 12 0)
         )
   where
-    encodeDevice 0     = return $ byteString $ S.replicate 7 0
-    encodeDevice devid = encodeOctal 7 devid
+    encodeDevice _ 0     = return $ byteString $ S.replicate 7 0
+    encodeDevice m devid = encodeOctal h ("device" ++ m) 7 devid
 
 
 -- | Encode a `ShortByteString` with an exact length, NUL terminating if it is
 -- shorter, but throwing `TarCreationError` if it is longer.
-encodeShort :: MonadThrow m => Int -> ShortByteString -> m Builder
-encodeShort !len !sbs
+encodeShort :: MonadThrow m => Header -> String -> Int -> ShortByteString -> m Builder
+encodeShort h field !len !sbs
     | lenShort <= len = return $ shortByteString sbs <> byteString (S.replicate (len - lenShort) 0)
     | otherwise =
         throwM $
-        TarCreationError $ "Can't fit '" ++ S8.unpack (fromShort sbs) ++ "' into the tar header"
+        TarCreationError $
+        "<encodeShort>: Tar string value overflow for file: " ++
+        headerFilePath h ++
+        " (for field '" ++ field ++ "' with maxLen " ++ show len ++ "): " ++ S8.unpack (fromShort sbs)
   where
     lenShort = SS.length sbs
 
 
 -- | Encode a number in 8base padded with zeros. Throws `TarCreationError` when overflows.
-encodeOctal :: (Show a, Integral a, MonadThrow m) => Int -> a -> m Builder
-encodeOctal !len !val = go 0 val mempty
+encodeOctal :: (Show a, Integral a, MonadThrow m) => Header -> String -> Int -> a -> m Builder
+encodeOctal h field !len !val = go 0 val mempty
   where
     go !n !cur !acc
       | cur == 0 =
@@ -522,7 +532,9 @@ encodeOctal !len !val = go 0 val mempty
       | otherwise =
         throwM $
         TarCreationError $
-        "<encodeOctal>: Tar value overflow (for maxLen " ++ show len ++ "): " ++ show val
+        "<encodeOctal>: Tar value overflow for file: " ++
+        headerFilePath h ++
+        " (for field '" ++ field ++ "' with maxLen " ++ show len ++ "): " ++ show val
 
 
 
@@ -543,7 +555,7 @@ yieldNulPadding n = do
 -- block at the end.
 tarPayload :: MonadThrow m =>
               FileOffset -- ^ Received payload size
-           -> Header -- ^ Header for the file that we are currently recieving the payload for
+           -> Header -- ^ Header for the file that we are currently receiving the payload for
            -> (FileOffset -> ConduitM (Either a ByteString) ByteString m FileOffset)
            -- ^ Continuation for after all payload has been received
            -> ConduitM (Either a ByteString) ByteString m FileOffset
@@ -556,18 +568,24 @@ tarPayload size header cont
         case eContent of
             Just h@(Left _) -> do
                 leftover h
-                throwM $ TarCreationError "Not enough payload."
+                throwM $
+                    TarCreationError $
+                    "<tarPayload>: Not enough payload for file: " ++ headerFilePath header
             Just (Right content) -> do
                 let nextSize = prevSize + fromIntegral (S.length content)
                 unless (nextSize <= headerPayloadSize header) $
-                    throwM $ TarCreationError "Too much payload"
+                    throwM $
+                    TarCreationError $
+                    "<tarPayload>: Too much payload for file: " ++ headerFilePath header
                 yield content
                 if nextSize == headerPayloadSize header
                     then do
                         paddedSize <- yieldNulPadding nextSize
                         cont (headerPayloadOffset header + paddedSize)
                     else go nextSize
-            Nothing -> throwM $ TarCreationError "Stream finished abruptly. Not enough payload."
+            Nothing ->
+                throwM $
+                TarCreationError "<tarPayload>: Stream finished abruptly. Not enough payload."
 
 
 
@@ -578,7 +596,8 @@ tarHeader offset = do
     case eContent of
         Just c@(Right _) -> do
             leftover c
-            throwM $ TarCreationError "Received payload without a corresponding Header."
+            throwM $
+                TarCreationError "<tarHeader>: Received payload without a corresponding Header."
         Just (Left header) -> do
             packHeader header >>= yield
             tarPayload 0 header tarHeader
@@ -594,7 +613,8 @@ tarFileInfo offset = do
     eContent <- await
     case eContent of
         Just (Right _) ->
-            throwM $ TarCreationError "Received payload without a corresponding FileInfo."
+            throwM $
+            TarCreationError "<tarFileInfo>: Received payload without a corresponding FileInfo."
         Just (Left fi) -> do
             eHeader <- headerFromFileInfo offset fi
             case eHeader of
@@ -676,7 +696,10 @@ filePathConduit = do
                     sourceDirectory (S8.unpack (filePath fi)) .| filePathConduit
                 fty -> do
                     leftover fp
-                    throwM $ TarCreationError $ "Unsupported file type: " ++ show fty
+                    throwM $
+                        TarCreationError $
+                        "<filePathConduit>: Unsupported file type: " ++
+                        show fty ++ " for file: " ++ S8.unpack (filePath fi)
             filePathConduit
         Nothing -> return ()
 
