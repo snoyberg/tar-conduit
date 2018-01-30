@@ -16,7 +16,6 @@ import           Data.Conduit.Tar.Types        (FileInfo (..), FileType (..))
 import           Foreign.C.Types               (CTime (..))
 import qualified System.Directory              as Dir
 import qualified System.Posix.Files.ByteString as Posix
-import qualified System.Posix.IO.ByteString    as Posix
 import qualified System.Posix.User             as Posix
 
 getFileInfo :: S8.ByteString -> IO FileInfo
@@ -72,7 +71,8 @@ restoreFile FileInfo {..} = do
                  (`when` Posix.setFileTimes filePath fileModTime fileModTime))
         FTSymbolicLink link ->
             liftIO $ do
-                Posix.fileExist filePath >>= (`when` Dir.removeFile filePath')
+                -- Try to unlink any existing file/symlink
+                void $ tryAny $ Posix.removeLink filePath
                 Posix.createSymbolicLink link filePath
                 Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
                 -- Try best effort in setting symbolic link modification time.
