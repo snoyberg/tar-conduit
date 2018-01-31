@@ -272,29 +272,30 @@ withEntries = peekForever . withEntry
 withFileInfo :: MonadThrow m
              => (FileInfo -> ConduitM ByteString o m ())
              -> ConduitM TarChunk o m ()
-withFileInfo inner = go
+withFileInfo inner =
+    start
   where
-    go = do
-        mc <- await
-        case mc of
-            Nothing -> return ()
-            Just (ChunkHeader h)
+    start = await >>= maybe (return ()) go
+
+    go x = do
+        case x of
+            ChunkHeader h
                 | headerLinkIndicator h >= 55 -> do
                     if (headerMagicVersion h == gnuTarMagicVersion)
-                        then handleGnuTarHeader h .| go
-                        else go
-            Just (ChunkHeader h) -> do
+                        then handleGnuTarHeader h >>= maybe start go
+                        else start
+            ChunkHeader h -> do
                 payloadsConduit .| (inner (fileInfoFromHeader h) <* sinkNull)
-                go
-            Just x@(ChunkPayload offset _bs) -> do
+                start
+            ChunkPayload offset _bs -> do
                 leftover x
                 throwM $ UnexpectedPayload offset
-            Just (ChunkException e) -> throwM e
+            ChunkException e -> throwM e
 
 -- | Take care of custom GNU tar format.
 handleGnuTarHeader :: MonadThrow m
                    => Header
-                   -> ConduitM TarChunk TarChunk m ()
+                   -> ConduitM TarChunk o m (Maybe TarChunk)
 handleGnuTarHeader h = do
     case headerLinkIndicator h of
         76 -> do
@@ -313,8 +314,8 @@ handleGnuTarHeader h = do
                         throwM $
                         FileTypeError (headerPayloadOffset nh) 'L' $
                         "Long filename doesn't match the original."
-                    yield
-                        (ChunkHeader $
+                    return
+                        (Just $ ChunkHeader $
                          nh
                          { headerFileNameSuffix = toShort longFileName
                          , headerFileNamePrefix = SS.empty
@@ -327,7 +328,8 @@ handleGnuTarHeader h = do
         83 -> do
             payloadsConduit .| sinkNull -- discard sparse files payload
             -- TODO : Implement restoring of sparse files
-        _ -> return ()
+            return Nothing
+        _ -> return Nothing
 
 
 
