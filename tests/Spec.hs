@@ -1,13 +1,16 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 module Main where
 
 import Prelude as P
 import Conduit
 import Control.Monad (void, when, zipWithM_)
+import Data.Conduit.List
 import Test.Hspec
 import Data.Conduit.Tar
 import System.Directory
 import Data.ByteString as S
+import Data.ByteString.Char8 as S8
 import System.IO
 import System.FilePath
 import Control.Exception
@@ -44,6 +47,69 @@ main = do
                     P.length tb1 `shouldBe` P.length tb2
                     zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
                     zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
+        describe "ustar" ustarSpec
+        describe "GNUtar" gnutarSpec
+
+defFileInfo :: FileInfo
+defFileInfo =
+    FileInfo
+    { filePath = "test-file-name"
+    , fileUserId = 1000
+    , fileUserName = "test-user-name"
+    , fileGroupId = 1000
+    , fileGroupName = "test-group-name"
+    , fileMode = 0o644
+    , fileSize = 0
+    , fileType = FTNormal
+    , fileModTime = 123456789
+    }
+
+
+fileInfoExpectation :: [(FileInfo, ByteString)] -> IO ()
+fileInfoExpectation files = do
+    let source = P.concat [[Left fi, Right content] | (fi, content) <- files]
+        collect fi = do
+            content <- foldC
+            yield (fi, content)
+    result <- runConduitRes $ sourceList source .| void tar .| untar collect .| sinkList
+    result `shouldBe` files
+
+
+emptyFileInfoExpectation :: FileInfo -> IO ()
+emptyFileInfoExpectation fi = fileInfoExpectation [(fi, "")]
+
+ustarSpec :: Spec
+ustarSpec = do
+    it "minimal" $ do
+        emptyFileInfoExpectation defFileInfo
+    it "long file name <255" $ do
+        emptyFileInfoExpectation $
+            defFileInfo {filePath = S8.pack (P.replicate 99 'f' </> P.replicate 99 'o')}
+
+
+gnutarSpec :: Spec
+gnutarSpec = do
+    it "LongLink - a file with long file name" $ do
+        emptyFileInfoExpectation $
+            defFileInfo
+            { filePath =
+                  S8.pack (P.replicate 100 'f' </> P.replicate 100 'o' </> P.replicate 99 'b')
+            }
+    it "LongLink - multiple files with long file names" $ do
+        fileInfoExpectation
+            [ ( defFileInfo
+                { filePath =
+                      S8.pack (P.replicate 100 'f' </> P.replicate 100 'o' </> P.replicate 99 'b')
+                , fileSize = 10
+                }
+              , "1234567890")
+            , ( defFileInfo
+                { filePath =
+                      S8.pack (P.replicate 1000 'g' </> P.replicate 1000 'o' </> P.replicate 99 'b')
+                , fileSize = 11
+                }
+              , "abcxdefghij")
+            ]
 
 withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c) -> IO c
 withTempTarFiles base =

@@ -400,7 +400,7 @@ headerFromFileInfo offset fi = do
         "<headerFromFileInfo>: Offset must always be a multiple of 512 for file: " ++
         S8.unpack (filePath fi)
     let (prefix, suffix) = splitPathAt 100 $ filePath fi
-    if (SS.length prefix > 155)
+    if (SS.length prefix > 155 || SS.null suffix)
         then return $ Left $ FileNameTooLong fi
         else do
             (payloadSize, linkName, linkIndicator) <-
@@ -594,6 +594,7 @@ tarHeader :: MonadThrow m =>
 tarHeader offset = do
     eContent <- await
     case eContent of
+        Just (Right bs) | S.null bs -> tarHeader offset -- ignore empty content
         Just c@(Right _) -> do
             leftover c
             throwM $
@@ -612,9 +613,12 @@ tarFileInfo :: MonadThrow m =>
 tarFileInfo offset = do
     eContent <- await
     case eContent of
-        Just (Right _) ->
+        Just (Right bs)
+            | S.null bs -> tarFileInfo offset -- ignore empty content
+        Just c@(Right _) -> do
+            leftover c
             throwM $
-            TarCreationError "<tarFileInfo>: Received payload without a corresponding FileInfo."
+                TarCreationError "<tarFileInfo>: Received payload without a corresponding FileInfo."
         Just (Left fi) -> do
             eHeader <- headerFromFileInfo offset fi
             case eHeader of

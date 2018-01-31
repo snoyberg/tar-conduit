@@ -59,8 +59,8 @@ restoreFile :: (MonadResource m) =>
 restoreFile FileInfo {..} = do
     let filePath' = S8.unpack filePath
         restorePermissions = do
-            Posix.setOwnerAndGroup filePath fileUserId fileGroupId
-            Posix.setFileMode filePath fileMode
+            void $ tryAny $ Posix.setOwnerAndGroup filePath fileUserId fileGroupId
+            void $ tryAny $ Posix.setFileMode filePath fileMode
     case fileType of
         FTDirectory -> do
             liftIO $ do
@@ -72,9 +72,9 @@ restoreFile FileInfo {..} = do
         FTSymbolicLink link ->
             liftIO $ do
                 -- Try to unlink any existing file/symlink
-                void $ tryAny $ Posix.removeLink filePath
+                _ <- tryAny $ Posix.removeLink filePath
                 Posix.createSymbolicLink link filePath
-                Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
+                _ <- tryAny $ Posix.setSymbolicLinkOwnerAndGroup filePath fileUserId fileGroupId
                 -- Try best effort in setting symbolic link modification time.
 #if MIN_VERSION_unix(2,7,0)
                 let CTime epochInt32 = fileModTime
