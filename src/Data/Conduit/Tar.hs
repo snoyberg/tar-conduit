@@ -1,7 +1,8 @@
-{-# LANGUAGE BangPatterns       #-}
-{-# LANGUAGE CPP                #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-| This module is about stream-processing tar archives. It is currently
 not very well tested. See the documentation of 'withEntries' for an usage sample.
 -}
@@ -33,6 +34,7 @@ module Data.Conduit.Tar
 import           Conduit                  as C
 import           Control.Exception        (assert)
 import           Control.Monad            (unless, void)
+import           Data.Bits
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as S
 import           Data.ByteString.Builder
@@ -44,6 +46,7 @@ import qualified Data.ByteString.Unsafe   as BU
 import           Data.Foldable            (foldr')
 import           Data.Monoid              ((<>), mempty)
 import           Foreign.C.Types          (CTime (..))
+import           Foreign.Storable
 import           System.Directory         (createDirectoryIfMissing,
                                            getCurrentDirectory)
 import           System.FilePath
@@ -86,27 +89,32 @@ headerFileType h =
         x  -> FTOther x
 
 parseHeader :: FileOffset -> ByteString -> Either TarException Header
-parseHeader offset bs = assert (S.length bs == 512) $ do
+parseHeader offset bs = do
+    unless (S.length bs == 512) $ Left $ IncompleteHeader offset
     let checksumBytes = S.take 8 $ S.drop 148 bs
         expectedChecksum = parseOctal checksumBytes
         actualChecksum = bsum bs - bsum checksumBytes + 8 * space
+        magicVersion = toShort $ BU.unsafeTake 8 $ BU.unsafeDrop 257 bs
+        getNumber :: (Storable a, Bits a, Integral a) => Int -> Int -> a
+        getNumber = if magicVersion == gnuTarMagicVersion then getHexOctal else getOctal
+
     unless (actualChecksum == expectedChecksum) (Left (BadChecksum offset))
     return Header
         { headerOffset         = offset
         , headerPayloadOffset  = offset + 512
         , headerFileNameSuffix = getShort 0 100
         , headerFileMode       = getOctal 100 8
-        , headerOwnerId        = getOctal 108 8
-        , headerGroupId        = getOctal 116 8
-        , headerPayloadSize    = getOctal 124 12
-        , headerTime           = CTime $ getOctal 136 12
+        , headerOwnerId        = getNumber 108 8
+        , headerGroupId        = getNumber 116 8
+        , headerPayloadSize    = getNumber 124 12
+        , headerTime           = CTime $ getNumber 136 12
         , headerLinkIndicator  = BU.unsafeIndex bs 156
         , headerLinkName       = getShort 157 100
-        , headerMagicVersion   = toShort $ S.take 8 $ S.drop 257 bs
+        , headerMagicVersion   = magicVersion
         , headerOwnerName      = getShort 265 32
         , headerGroupName      = getShort 297 32
-        , headerDeviceMajor    = getOctal 329 8
-        , headerDeviceMinor    = getOctal 337 8
+        , headerDeviceMajor    = getNumber 329 8
+        , headerDeviceMinor    = getNumber 337 8
         , headerFileNamePrefix = getShort 345 155
         }
   where
@@ -115,7 +123,22 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
 
     getShort off len = toShort $ S.takeWhile (/= 0) $ S.take len $ S.drop off bs
 
-    getOctal off len = parseOctal $ S.take len $ S.drop off bs
+    getOctal :: Integral a => Int -> Int -> a
+    getOctal off len = parseOctal $ BU.unsafeTake len $ BU.unsafeDrop off bs
+
+    -- | Depending on the first bit of the first byte in the range either choose direct
+    -- hex representation, or classic octal string view.
+    getHexOctal :: (Storable a, Bits a, Integral a) => Int -> Int -> a
+    getHexOctal off len = if BU.unsafeIndex bs off .&. 0x80 == 0x80
+                          then complementBit
+                               (fromHex $ BU.unsafeTake len $ BU.unsafeDrop off bs)
+                               (len * 8 - 1)
+                          else getOctal off len
+
+    -- | Make sure we don't use more bytes than we can fit in the data type.
+    fromHex :: forall a . (Storable a, Bits a, Integral a) => ByteString -> a
+    fromHex str = S.foldl' (\ acc x -> (acc `shiftL` 8) .|. fromIntegral x) 0 $
+                  S.drop (max 0 (S.length str - sizeOf (undefined :: a))) str
 
     parseOctal :: Integral i => ByteString -> i
     parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
@@ -458,50 +481,108 @@ packHeader header = do
     (left, right) <- packHeaderNoChecksum header
     let sumsl :: SL.ByteString -> Int
         sumsl = SL.foldl' (\ !acc !v -> acc + fromIntegral v) 0
-    encChecksum <- encodeOctal header "checksum" 7 $ sumsl left + 32 * 8 + sumsl right
-    return $
-        SL.toStrict $
-        toLazyByteString $ lazyByteString left <> encChecksum <> word8 0 <> lazyByteString right
+        checksum = sumsl left + 32 * 8 + sumsl right
+    encChecksum <-
+        either
+            (\(_, val) ->
+                 throwM $
+                 TarCreationError $
+                 "<packHeader>: Impossible happened - Checksum " ++
+                 show val ++ " doesn't fit into header for file: " ++ headerFilePath header)
+            return $
+        encodeOctal 8 checksum
+    return $ SL.toStrict $ left <> toLazyByteString encChecksum <> right
+
 
 
 packHeaderNoChecksum :: MonadThrow m => Header -> m (SL.ByteString, SL.ByteString)
 packHeaderNoChecksum h@Header {..} = do
     let CTime headerTime' = headerTime
+        magic0 = headerMagicVersion
+    (magic1, hOwnerId) <- encodeNumber magic0 "ownerId" 8 headerOwnerId
+    (magic2, hGroupId) <- encodeNumber magic1 "groupId" 8 headerGroupId
+    (magic3, hPayloadSize) <- encodeNumber magic2 "payloadSize" 12 headerPayloadSize
+    (magic4, hTime) <- encodeNumber magic3 "time" 12 headerTime'
+    (magic5, hDevMajor) <- encodeDevice magic4 "Major" headerDeviceMajor
+    (magic6, hDevMinor) <- encodeDevice magic5 "Minor" headerDeviceMinor
     hNameSuffix <- encodeShort h "nameSuffix" 100 headerFileNameSuffix
-    hFileMode <- encodeOctal h "fileMode" 7 headerFileMode
-    hOwnerId <- encodeOctal h "ownerId" 7 headerOwnerId
-    hGroupId <- encodeOctal h "groupId" 7 headerGroupId
-    hPayloadSize <- encodeOctal h "payloadSize" 11 headerPayloadSize
-    hTime <- encodeOctal h "time" 11 headerTime'
+    hFileMode <- throwNumberEither "fileMode" $ encodeOctal 8 headerFileMode
     hLinkName <- encodeShort h "linkName" 100 headerLinkName
-    hMagicVersion <- encodeShort h "magicVersion" 8 headerMagicVersion
+    hMagicVersion <- encodeShort h "magicVersion" 8 magic6
     hOwnerName <- encodeShort h "ownerName" 32 headerOwnerName
     hGroupName <- encodeShort h "groupName" 32 headerGroupName
-    hDevMajor <- encodeDevice "Major" headerDeviceMajor
-    hDevMinor <- encodeDevice "Minor" headerDeviceMinor
     hNamePrefix <- encodeShort h "namePrefix" 155 headerFileNamePrefix
     return
         ( toLazyByteString $
           hNameSuffix <>
-          hFileMode <> word8 0 <>
-          hOwnerId <> word8 0 <>
-          hGroupId <> word8 0 <>
-          hPayloadSize <> word8 0 <>
-          hTime <> word8 0
+          hFileMode <>
+          hOwnerId <>
+          hGroupId <>
+          hPayloadSize <>
+          hTime
         , toLazyByteString $
           word8 headerLinkIndicator <>
           hLinkName <>
           hMagicVersion <>
           hOwnerName <>
           hGroupName <>
-          hDevMajor <> word8 0 <>
-          hDevMinor <> word8 0 <>
+          hDevMajor <>
+          hDevMinor <>
           hNamePrefix <>
           byteString (S.replicate 12 0)
         )
   where
-    encodeDevice _ 0     = return $ byteString $ S.replicate 7 0
-    encodeDevice m devid = encodeOctal h ("device" ++ m) 7 devid
+    encodeNumber magic field len = throwNumberEither field . fallbackHex magic . encodeOctal len
+    encodeDevice magic _ 0     = return (magic, byteString $ S.replicate 8 0)
+    encodeDevice magic m devid = encodeNumber magic ("device" ++ m) 8 devid
+    fallbackHex magic (Right enc)       = Right (magic, enc)
+    fallbackHex _     (Left (len, val)) = (,) gnuTarMagicVersion <$> encodeHex len val
+    throwNumberEither _     (Right v)         = return v
+    throwNumberEither field (Left (len, val)) =
+        throwM $
+        TarCreationError $
+        "<packHeaderNoChecksum>: Tar value overflow for file: " ++
+        headerFilePath h ++
+        " (for field '" ++ field ++ "' with maxLen " ++ show len ++ "): " ++ show val
+
+
+-- | Encode a number as hexadecimal with most significant bit set to 1. Returns Left if the value
+-- doesn't fit in supplied length.
+encodeHex :: (Bits a, Integral a) =>
+             Int -> a -> Either (Int, a) Builder
+encodeHex !len !val =
+    if complement (complement 0 `shiftL` infoBits) .&. val == val
+    then go 0 (setBit val infoBits) mempty
+    else Left (len, val)
+  where
+    infoBits = len * 8 - 1
+    go !n !cur !acc
+      | cur == (cur `shiftR` 8) =
+        if n < len
+          then Right $ word8 0x80 <> byteString (S.replicate (len - n - 1) 0) <> acc
+          else return acc
+      | n < len = go (n + 1) (cur `shiftR` 8) (word8 (fromIntegral (cur .&. 0xFF)) <> acc)
+      | otherwise = Left (len, val)
+
+
+-- | Encode a number in 8base padded with zeros and terminated with NUL.
+encodeOctal :: (Integral a) =>
+                Int -> a -> Either (Int, a) Builder
+encodeOctal !len' !val = go 0 val (word8 0)
+  where
+    !len = len' - 1
+    go !n !cur !acc
+      | cur == 0 =
+        if n < len
+          then return $ byteString (S.replicate (len - n) 48) <> acc
+          else return acc
+      | n < len =
+        let !(q, r) = cur `quotRem` 8
+        in go (n + 1) q (word8 (fromIntegral r + 48) <> acc)
+      | otherwise = Left (len', val)
+
+
+
 
 
 -- | Encode a `ShortByteString` with an exact length, NUL terminating if it is
@@ -519,27 +600,6 @@ encodeShort h field !len !sbs
     lenShort = SS.length sbs
 
 
--- | Encode a number in 8base padded with zeros. Throws `TarCreationError` when overflows.
-encodeOctal :: (Show a, Integral a, MonadThrow m) => Header -> String -> Int -> a -> m Builder
-encodeOctal h field !len !val = go 0 val mempty
-  where
-    go !n !cur !acc
-      | cur == 0 =
-        if n < len
-          then return $ byteString (S.replicate (len - n) 48) <> acc
-          else return acc
-      | n < len =
-        let !(q, r) = cur `quotRem` 8
-        in go (n + 1) q (word8 (fromIntegral r + 48) <> acc)
-      | otherwise =
-        throwM $
-        TarCreationError $
-        "<encodeOctal>: Tar value overflow for file: " ++
-        headerFilePath h ++
-        " (for field '" ++ field ++ "' with maxLen " ++ show len ++ "): " ++ show val
-
-
-
 -- | Produce a ByteString chunk with NUL characters of the size needed to get up
 -- to the next 512 byte mark in respect to the supplied offset and return that
 -- offset incremented to that mark.
@@ -549,7 +609,6 @@ yieldNulPadding n = do
     if pad /= blockSize
         then yield (S.replicate (fromIntegral pad) 0) >> return (n + pad)
         else return n
-
 
 
 
@@ -663,7 +722,7 @@ tarFileInfo offset = do
 -- `Right` `ByteString`. The produced `ByteString` is in the raw tar format and
 -- is properly terminated at the end, therefore it should no be modified
 -- afterwards. Returned is the total size of the bytestring as a `FileOffset`.
-tar :: MonadResource m =>
+tar :: MonadThrow m =>
        ConduitM (Either FileInfo ByteString) ByteString m FileOffset
 tar = do
     offset <- tarFileInfo 0
@@ -674,8 +733,8 @@ tar = do
 -- | Just like `tar`, except gives you the ability to work at a lower `Header`
 -- level, versus more user friendly `FileInfo`. A deeper understanding of tar
 -- format is necessary in order to work directly with `Header`s.
-tarEntries :: MonadResource m =>
-            ConduitM (Either Header ByteString) ByteString m FileOffset
+tarEntries :: MonadThrow m =>
+              ConduitM (Either Header ByteString) ByteString m FileOffset
 tarEntries = do
     offset <- tarHeader 0
     yield terminatorBlock

@@ -11,6 +11,7 @@ import Data.Conduit.Tar
 import System.Directory
 import Data.ByteString as S
 import Data.ByteString.Char8 as S8
+import Data.Int
 import System.IO
 import System.FilePath
 import Control.Exception
@@ -71,7 +72,7 @@ fileInfoExpectation files = do
         collect fi = do
             content <- foldC
             yield (fi, content)
-    result <- runConduitRes $ sourceList source .| void tar .| untar collect .| sinkList
+    result <- runConduit $ sourceList source .| void tar .| untar collect .| sinkList
     result `shouldBe` files
 
 
@@ -110,6 +111,21 @@ gnutarSpec = do
                 }
               , "abcxdefghij")
             ]
+    it "Large User Id" $ do emptyFileInfoExpectation $ defFileInfo {fileUserId = 0o777777777}
+    it "All Large Numeric Values" $ do
+        emptyFileInfoExpectation $
+            defFileInfo
+            { fileUserId = 0x7FFFFFFFFFFFFFFF
+            , fileGroupId = 0x7FFFFFFFFFFFFFFF
+            , fileModTime = fromIntegral (maxBound :: Int64)
+            }
+    it "Negative Mod Time" $ do
+        emptyFileInfoExpectation $
+            defFileInfo
+            { fileModTime = fromIntegral (minBound :: Int64)
+            }
+
+
 
 withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c) -> IO c
 withTempTarFiles base =
