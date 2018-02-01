@@ -15,12 +15,13 @@ import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
 
+
 getFileInfo :: S8.ByteString -> IO FileInfo
 getFileInfo fp = do
     let fp' = S8.unpack fp
     fs <- Posix.getSymbolicLinkStatus fp'
-    let uid = Posix.fileOwner fs
-        gid = Posix.fileGroup fs
+    let uid = fromIntegral $ Posix.fileOwner fs
+        gid = fromIntegral $ Posix.fileGroup fs
     (fType, fSize) <-
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
@@ -57,6 +58,9 @@ restoreFile FileInfo {..} = do
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
         Dir.setModificationTime filePath' modTime
-        Posix.setSymbolicLinkOwnerAndGroup filePath' fileUserId fileGroupId
+        Posix.setSymbolicLinkOwnerAndGroup
+          filePath'
+          (fromIntegral fileUserId)
+          (fromIntegral fileGroupId)
         Posix.setFileMode filePath' fileMode
 

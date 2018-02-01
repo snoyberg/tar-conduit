@@ -536,7 +536,7 @@ packHeaderNoChecksum h@Header {..} = do
     encodeDevice magic _ 0     = return (magic, byteString $ S.replicate 8 0)
     encodeDevice magic m devid = encodeNumber magic ("device" ++ m) 8 devid
     fallbackHex magic (Right enc)       = Right (magic, enc)
-    fallbackHex _     (Left (len, val)) = (,) gnuTarMagicVersion <$> encodeHex len val
+    fallbackHex _     (Left (len, val)) = fmap ((,) gnuTarMagicVersion) $ encodeHex len val
     throwNumberEither _     (Right v)         = return v
     throwNumberEither field (Left (len, val)) =
         throwM $

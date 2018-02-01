@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE CPP #-}
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
@@ -14,6 +15,8 @@ module Data.Conduit.Tar.Types
     , GroupID
     , DeviceID
     , EpochTime
+    , CUid(..)
+    , CGid(..)
     ) where
 
 import           Control.Exception        (Exception)
@@ -21,11 +24,40 @@ import           Data.ByteString          (ByteString)
 import           Data.ByteString.Short    (ShortByteString)
 import           Data.Typeable
 import           Data.Word
-
-#if WINDOWS
-import           System.PosixCompat.Types
-#else
 import           System.Posix.Types
+#if WINDOWS
+import           Data.Bits
+import           Foreign.Storable
+newtype CUid =
+  CUid Word32
+  deriving ( Bounded
+           , Enum
+           , Eq
+           , Integral
+           , Num
+           , Ord
+           , Read
+           , Real
+           , Show
+           , Bits
+           , Storable
+           )
+newtype CGid =
+  CGid Word32
+  deriving ( Bounded
+           , Enum
+           , Eq
+           , Integral
+           , Num
+           , Ord
+           , Read
+           , Real
+           , Show
+           , Bits
+           , Storable
+           )
+type UserID = CUid
+type GroupID = CGid
 #endif
 
 data FileType
