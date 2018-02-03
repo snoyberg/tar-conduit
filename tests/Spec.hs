@@ -15,6 +15,7 @@ import System.Directory
 import Data.ByteString as S
 import Data.ByteString.Char8 as S8
 import Data.Int
+import Data.Monoid
 import System.IO
 import System.FilePath
 import Control.Exception
@@ -85,8 +86,8 @@ asciiGen n = S.pack <$> vectorOf n (frequency [(1, pure 0x2f), (20, choose (0x20
 
 instance Arbitrary GnuTarFile where
     arbitrary = do
-        filePathLen <- (`mod` 6) <$> arbitrary
-        filePath <- asciiGen filePathLen
+        filePathLen <- (`mod` 4090) <$> arbitrary
+        filePath <- ("test-" <>) <$> asciiGen filePathLen
         NonNegative fileUserId64 <- arbitrary
         let fileUserId = fromIntegral (fileUserId64 :: Int64)
         NonNegative fileGroupId64 <- arbitrary
@@ -96,30 +97,45 @@ instance Arbitrary GnuTarFile where
         fileGroupNameLen <- (`mod` 32) <$> arbitrary
         fileGroupName <- asciiGen fileGroupNameLen
         fileMode <- fromIntegral <$> choose (0o000 :: Word, 0o777)
-        fileType <- oneof [pure FTNormal, pure FTDirectory, FTSymbolicLink <$> asciiGen filePathLen]
-        (fileSize, mContent) <- case fileType of
-            FTNormal -> do
-                content <- S.pack <$> arbitrary
-                return (fromIntegral (S.length content), Just content)
-            _ -> return (0, Nothing)
+        -- TODO: use `filePathLen` instead, once long link name 'K' is implemented
+        linkNameLen <- (`mod` 101) <$> arbitrary
+        fileType <-
+            oneof
+                [ pure FTNormal
+                , pure FTDirectory
+                , FTSymbolicLink <$> asciiGen linkNameLen
+                ]
+        (fileSize, mContent) <-
+            case fileType of
+                FTNormal -> do
+                    content <- arbitraryByteString
+                    return (fromIntegral (S.length content), Just content)
+                _ -> return (0, Nothing)
         fileModTime <- fromIntegral <$> (arbitrary :: Gen Int64)
         return (GnuTarFile FileInfo {..} mContent)
 
+arbitraryByteString :: Gen ByteString
+arbitraryByteString = do
+    maxLen <- arbitrary
+    len <- (`mod` (maxLen + 1)) <$> arbitrary
+    genFun <- arbitrary
+    let strGen x | x < len = Just (genFun x, x + 1)
+                 | otherwise = Nothing
+    return $ fst $ S.unfoldrN maxLen strGen 0
 
-_fileInfoProperty :: [GnuTarFile] -> Property
-_fileInfoProperty files =
-    Just source === do
-        let collectBack fi = do
-                yield $ Left fi
-                case fileType fi of
-                    FTNormal -> do
-                        content <- foldC
-                        yield $ Right content
-                    _ -> return ()
-        runConduit $ sourceList source .| void tar .| untar collectBack .| sinkList
+fileInfoProperty :: [GnuTarFile] -> Property
+fileInfoProperty files = either throw (source ===) eResult
   where
+    eResult = runConduit $ sourceList source .| void tar .| untar collectBack .| sinkList
     source =
         P.concat [Left fi : maybe [] ((: []) . Right) mContent | GnuTarFile fi mContent <- files]
+    collectBack fi = do
+        yield $ Left fi
+        case fileType fi of
+            FTNormal -> do
+                content <- foldC
+                yield $ Right content
+            _ -> return ()
 
 
 emptyFileInfoExpectation :: FileInfo -> IO ()
@@ -174,7 +190,7 @@ gnutarSpec = do
          (\case
               TarCreationError _ -> True
               _ -> False))
-    --it "tar/untar Property" $ property fileInfoProperty
+    it "tar/untar Property" $ property fileInfoProperty
 
 
 withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c) -> IO c
@@ -210,4 +226,3 @@ collectContent :: FilePath -> IO (ByteString)
 collectContent dir =
     runConduitRes $
     sourceDirectoryDeep False dir .| mapMC (\fp -> runConduit (sourceFileBS fp .| foldC)) .| foldC
-

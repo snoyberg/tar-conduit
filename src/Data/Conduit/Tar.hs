@@ -603,7 +603,6 @@ encodeOctal !len' !val
 
 
 
-
 -- | Encode a `ShortByteString` with an exact length, NUL terminating if it is
 -- shorter, but throwing `TarCreationError` if it is longer.
 encodeShort :: MonadThrow m => Header -> String -> Int -> ShortByteString -> m Builder
