@@ -15,8 +15,11 @@ module Data.Conduit.Tar
     , untarWithFinalizers
     , restoreFile
     , restoreFileInto
+    -- ** Operate on Chunks
+    , untarChunks
     , withEntry
     , withEntries
+    , withFileInfo
       -- * Helper functions
     , headerFileType
     , headerFilePath
@@ -71,10 +74,15 @@ headerFilePathBS Header {..} =
                  [fromShort headerFileNamePrefix, pathSeparatorS, fromShort headerFileNameSuffix]
         else fromShort headerFileNameSuffix
 
+-- | Construct a `FilePath` from `headerFileNamePrefix` and `headerFileNameSuffix`.
+--
+-- @since 0.1.0
 headerFilePath :: Header -> FilePath
 headerFilePath = S8.unpack . headerFilePathBS
 
-
+-- | Get Header file type.
+--
+-- @since 0.1.0
 headerFileType :: Header -> FileType
 headerFileType h =
     case headerLinkIndicator h of
@@ -130,15 +138,8 @@ parseHeader offset bs = do
     -- hex representation, or classic octal string view.
     getHexOctal :: (Storable a, Bits a, Integral a) => Int -> Int -> a
     getHexOctal off len = if BU.unsafeIndex bs off .&. 0x80 == 0x80
-                          then complementBit
-                               (fromHex $ BU.unsafeTake len $ BU.unsafeDrop off bs)
-                               (len * 8 - 1)
+                          then fromHex $ BU.unsafeTake len $ BU.unsafeDrop off bs
                           else getOctal off len
-
-    -- | Make sure we don't use more bytes than we can fit in the data type.
-    fromHex :: forall a . (Storable a, Bits a, Integral a) => ByteString -> a
-    fromHex str = S.foldl' (\ acc x -> (acc `shiftL` 8) .|. fromIntegral x) 0 $
-                  S.drop (max 0 (S.length str - sizeOf (undefined :: a))) str
 
     parseOctal :: Integral i => ByteString -> i
     parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
@@ -150,7 +151,15 @@ parseHeader offset bs = do
     zero = 48
     seven = 55
 
--- | Convert a stream of raw bytes into a stream of 'TarChunk's.
+-- | Make sure we don't use more bytes than we can fit in the data type.
+fromHex :: forall a . (Storable a, Bits a, Integral a) => ByteString -> a
+fromHex str = S.foldl' (\ acc x -> (acc `shiftL` 8) .|. fromIntegral x) 0 $
+              S.drop (max 0 (S.length str - sizeOf (undefined :: a))) str
+
+
+
+-- | Convert a stream of raw bytes into a stream of 'TarChunk's. This stream can further be passed
+-- into `withFileInfo` or `withHeaders` functions.
 --
 -- @since 0.2.1
 untarChunks :: Monad m => ConduitM ByteString TarChunk m ()
@@ -213,6 +222,9 @@ untarChunks =
 
 
 -- | Process a single tar entry. See 'withEntries' for more details.
+--
+-- @since 0.1.0
+--
 withEntry :: MonadThrow m
           => (Header -> ConduitM ByteString o m r)
           -> ConduitM TarChunk o m r
@@ -273,6 +285,8 @@ Note that the benefits of stream processing are easily lost when working with a 
 >         hashentry hdr = when (CT.headerFileType hdr == CT.FTNormal) $ do
 >             content <- mconcat <$> sinkList
 >             yield (CT.headerFilePath hdr, hash content)
+
+-- @since 0.1.0
 -}
 withEntries :: MonadThrow m
             => (Header -> ConduitM ByteString o m ())
@@ -292,6 +306,8 @@ withEntries = peekForever . withEntry
 --
 -- /Note/ - Here is a really good reference for specifics of different tar formats:
 -- <https://github.com/libarchive/libarchive/wiki/ManPageTar5>
+--
+-- @since 0.2.2
 withFileInfo :: MonadThrow m
              => (FileInfo -> ConduitM ByteString o m ())
              -> ConduitM TarChunk o m ()
@@ -357,6 +373,8 @@ handleGnuTarHeader h = do
 
 
 -- | Just like `withFileInfo`, but works directly on the stream of bytes.
+--
+-- @since 0.2.0
 untar :: MonadThrow m
       => (FileInfo -> ConduitM ByteString o m ())
       -> ConduitM ByteString o m ()
@@ -367,6 +385,8 @@ untar inner = untarChunks .| withFileInfo inner
 -- action, all of which will be executed after the whole tarball has been processed in the opposite
 -- order. Very useful with `restoreFile` and `restoreFileInto`, since they restore direcory
 -- modification timestamps only after files have been fully written to disk.
+--
+-- @since 0.2.0
 untarWithFinalizers ::
        (MonadThrow m, MonadIO m)
     => (FileInfo -> ConduitM ByteString (IO ()) m ())
@@ -493,8 +513,6 @@ packHeader header = do
         encodeOctal 8 checksum
     return $ SL.toStrict $ left <> toLazyByteString encChecksum <> right
 
-
-
 packHeaderNoChecksum :: MonadThrow m => Header -> m (SL.ByteString, SL.ByteString)
 packHeaderNoChecksum h@Header {..} = do
     let CTime headerTime' = headerTime
@@ -547,40 +565,41 @@ packHeaderNoChecksum h@Header {..} = do
 
 
 -- | Encode a number as hexadecimal with most significant bit set to 1. Returns Left if the value
--- doesn't fit in supplied length.
-encodeHex :: (Bits a, Integral a) =>
+-- doesn't fit in a ByteString of the supplied length, also prohibits negative numbers if precision
+-- of value is higher than available length. Eg. length 8 can't reliably encoed negative numbers,
+-- since MSB is already used for flagging Hex extension.
+encodeHex :: (Storable a, Bits a, Integral a) =>
              Int -> a -> Either (Int, a) Builder
 encodeHex !len !val =
-    if complement (complement 0 `shiftL` infoBits) .&. val == val
-    then go 0 (setBit val infoBits) mempty
-    else Left (len, val)
+    if complement (complement 0 `shiftL` infoBits) .&. val == val &&
+       not (val < 0 && len < sizeOf val)
+        then go 0 val mempty
+        else Left (len, val)
   where
+    len' = len - 1
     infoBits = len * 8 - 1
     go !n !cur !acc
-      | cur == (cur `shiftR` 8) =
-        if n < len
-          then Right $ word8 0x80 <> byteString (S.replicate (len - n - 1) 0) <> acc
-          else return acc
-      | n < len = go (n + 1) (cur `shiftR` 8) (word8 (fromIntegral (cur .&. 0xFF)) <> acc)
-      | otherwise = Left (len, val)
+        | n < len' = go (n + 1) (cur `shiftR` 8) (word8 (fromIntegral (cur .&. 0xFF)) <> acc)
+        | otherwise = return (word8 (fromIntegral (cur .&. 0x7F) .|. 0x80) <> acc)
 
 
 -- | Encode a number in 8base padded with zeros and terminated with NUL.
 encodeOctal :: (Integral a) =>
                 Int -> a -> Either (Int, a) Builder
-encodeOctal !len' !val = go 0 val (word8 0)
+encodeOctal !len' !val
+    | val < 0 = Left (len', val)
+    | otherwise = go 0 val (word8 0)
   where
     !len = len' - 1
     go !n !cur !acc
-      | cur == 0 =
-        if n < len
-          then return $ byteString (S.replicate (len - n) 48) <> acc
-          else return acc
-      | n < len =
-        let !(q, r) = cur `quotRem` 8
-        in go (n + 1) q (word8 (fromIntegral r + 48) <> acc)
-      | otherwise = Left (len', val)
-
+        | cur == 0 =
+            if n < len
+                then return $ byteString (S.replicate (len - n) 48) <> acc
+                else return acc
+        | n < len =
+            let !(q, r) = cur `quotRem` 8
+            in go (n + 1) q (word8 (fromIntegral r + 48) <> acc)
+        | otherwise = Left (len', val)
 
 
 
@@ -637,7 +656,9 @@ tarPayload size header cont
                 unless (nextSize <= headerPayloadSize header) $
                     throwM $
                     TarCreationError $
-                    "<tarPayload>: Too much payload for file: " ++ headerFilePath header
+                    "<tarPayload>: Too much payload (" ++
+                    show nextSize ++ ") for file with size (" ++
+                    show (headerPayloadSize header) ++ "): " ++ headerFilePath header
                 yield content
                 if nextSize == headerPayloadSize header
                     then do
@@ -720,8 +741,10 @@ tarFileInfo offset = do
 -- | Create a tar archive by suppying a stream of `Left` `FileInfo`s. Whenever a
 -- file type is `FTNormal`, it must be immediately followed by its content as
 -- `Right` `ByteString`. The produced `ByteString` is in the raw tar format and
--- is properly terminated at the end, therefore it should no be modified
+-- is properly terminated at the end, therefore it can not be extended
 -- afterwards. Returned is the total size of the bytestring as a `FileOffset`.
+--
+-- @since 0.2.0
 tar :: MonadThrow m =>
        ConduitM (Either FileInfo ByteString) ByteString m FileOffset
 tar = do
@@ -733,6 +756,8 @@ tar = do
 -- | Just like `tar`, except gives you the ability to work at a lower `Header`
 -- level, versus more user friendly `FileInfo`. A deeper understanding of tar
 -- format is necessary in order to work directly with `Header`s.
+--
+-- @since 0.2.0
 tarEntries :: MonadThrow m =>
               ConduitM (Either Header ByteString) ByteString m FileOffset
 tarEntries = do
@@ -744,6 +769,8 @@ tarEntries = do
 
 -- | Turn a stream of file paths into a stream of `FileInfo` and file
 -- content. All paths will be decended into recursively.
+--
+-- @since 0.2.0
 filePathConduit :: MonadResource m =>
                    ConduitM FilePath (Either FileInfo ByteString) m ()
 filePathConduit = do
@@ -774,19 +801,25 @@ filePathConduit = do
 -- cli tool, it may be necessary to `setCurrentDirectory` in order to get the
 -- paths relative. Using `filePathConduit` directly, while modifying the
 -- `filePath`, would be another approach to handling the file paths.
+--
+-- @since 0.2.0
 tarFilePath :: MonadResource m => ConduitM FilePath ByteString m FileOffset
 tarFilePath = filePathConduit .| tar
 
 
 -- | Uses `tarFilePath` to create a tarball, that will recursively include the
 -- supplied list of all the files and directories
+--
+-- @since 0.2.0
 createTarball :: FilePath -- ^ File name for the tarball
               -> [FilePath] -- ^ List of files and directories to include in the tarball
               -> IO ()
 createTarball tarfp dirs = do
     runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkFile tarfp
 
-
+-- | Take a list of files and paths, recursively tar them and write output into supplied handle.
+--
+-- @since 0.2.0
 writeTarball :: Handle -- ^ Handle where created tarball will be written to
              -> [FilePath] -- ^ List of files and directories to include in the tarball
              -> IO ()
@@ -813,7 +846,11 @@ fileInfoFromHeader header@(Header {..}) =
     }
 
 
--- | Extract a tarball.
+-- | Extract a tarball while using `restoreFileInfo` for writing files onto the file
+-- system. Restoration process is cross platform and should work concistently both on Windows and
+-- Posix systems.
+--
+-- @since 0.2.0
 extractTarball :: FilePath -- ^ Filename for the tarball
                -> Maybe FilePath -- ^ Folder where tarball should be extract
                                  -- to. Default is the current path

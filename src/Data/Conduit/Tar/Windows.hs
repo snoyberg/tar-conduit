@@ -58,9 +58,5 @@ restoreFile FileInfo {..} = do
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
         Dir.setModificationTime filePath' modTime
-        Posix.setSymbolicLinkOwnerAndGroup
-          filePath'
-          (fromIntegral fileUserId)
-          (fromIntegral fileGroupId)
         Posix.setFileMode filePath' fileMode
 

@@ -1,4 +1,6 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 module Main where
 
@@ -7,6 +9,7 @@ import Conduit
 import Control.Monad (void, when, zipWithM_)
 import Data.Conduit.List
 import Test.Hspec
+import Test.QuickCheck
 import Data.Conduit.Tar
 import System.Directory
 import Data.ByteString as S
@@ -69,11 +72,54 @@ defFileInfo =
 fileInfoExpectation :: [(FileInfo, ByteString)] -> IO ()
 fileInfoExpectation files = do
     let source = P.concat [[Left fi, Right content] | (fi, content) <- files]
-        collect fi = do
+        collectBack fi = do
             content <- foldC
             yield (fi, content)
-    result <- runConduit $ sourceList source .| void tar .| untar collect .| sinkList
+    result <- runConduit $ sourceList source .| void tar .| untar collectBack .| sinkList
     result `shouldBe` files
+
+data GnuTarFile = GnuTarFile FileInfo (Maybe ByteString) deriving (Show, Eq)
+
+asciiGen :: Int -> Gen ByteString
+asciiGen n = S.pack <$> vectorOf n (frequency [(1, pure 0x2f), (20, choose (0x20, 0x7e))])
+
+instance Arbitrary GnuTarFile where
+    arbitrary = do
+        filePathLen <- (`mod` 6) <$> arbitrary
+        filePath <- asciiGen filePathLen
+        NonNegative fileUserId64 <- arbitrary
+        let fileUserId = fromIntegral (fileUserId64 :: Int64)
+        NonNegative fileGroupId64 <- arbitrary
+        let fileGroupId = fromIntegral (fileGroupId64 :: Int64)
+        fileUserNameLen <- (`mod` 32) <$> arbitrary
+        fileUserName <- asciiGen fileUserNameLen
+        fileGroupNameLen <- (`mod` 32) <$> arbitrary
+        fileGroupName <- asciiGen fileGroupNameLen
+        fileMode <- fromIntegral <$> choose (0o000 :: Word, 0o777)
+        fileType <- oneof [pure FTNormal, pure FTDirectory, FTSymbolicLink <$> asciiGen filePathLen]
+        (fileSize, mContent) <- case fileType of
+            FTNormal -> do
+                content <- S.pack <$> arbitrary
+                return (fromIntegral (S.length content), Just content)
+            _ -> return (0, Nothing)
+        fileModTime <- fromIntegral <$> (arbitrary :: Gen Int64)
+        return (GnuTarFile FileInfo {..} mContent)
+
+
+_fileInfoProperty :: [GnuTarFile] -> Property
+_fileInfoProperty files =
+    Just source === do
+        let collectBack fi = do
+                yield $ Left fi
+                case fileType fi of
+                    FTNormal -> do
+                        content <- foldC
+                        yield $ Right content
+                    _ -> return ()
+        runConduit $ sourceList source .| void tar .| untar collectBack .| sinkList
+  where
+    source =
+        P.concat [Left fi : maybe [] ((: []) . Right) mContent | GnuTarFile fi mContent <- files]
 
 
 emptyFileInfoExpectation :: FileInfo -> IO ()
@@ -119,12 +165,16 @@ gnutarSpec = do
             , fileGroupId = 0x7FFFFFFFFFFFFFFF
             , fileModTime = fromIntegral (maxBound :: Int64)
             }
-    it "Negative Mod Time" $ do
-        emptyFileInfoExpectation $
-            defFileInfo
-            { fileModTime = fromIntegral (minBound :: Int64)
-            }
-
+    it "Negative Values" $ do
+        emptyFileInfoExpectation $ defFileInfo {fileModTime = fromIntegral (minBound :: Int64)}
+        emptyFileInfoExpectation $ defFileInfo {fileModTime = -10}
+        emptyFileInfoExpectation $ defFileInfo {fileUserId = fromIntegral (minBound :: Int64)}
+    it "Negative Size" $
+        (emptyFileInfoExpectation (defFileInfo {fileSize = -10}) `shouldThrow`
+         (\case
+              TarCreationError _ -> True
+              _ -> False))
+    --it "tar/untar Property" $ property fileInfoProperty
 
 
 withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c) -> IO c
