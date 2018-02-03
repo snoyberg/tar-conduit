@@ -1,3 +1,7 @@
+## 0.2.1 - 2018-02-03
+
+ * Expose `untarChunks`
+
 ## 0.2.0 - 2018-01-23
 
  * Implemented tarball creation

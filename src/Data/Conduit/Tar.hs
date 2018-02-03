@@ -10,6 +10,7 @@ module Data.Conduit.Tar
       tar
     , tarEntries
     , untar
+    , untarChunks
     , untarWithFinalizers
     , restoreFile
     , restoreFileInto
@@ -126,6 +127,9 @@ parseHeader offset bs = assert (S.length bs == 512) $ do
     zero = 48
     seven = 55
 
+-- | Convert a stream of raw bytes into a stream of 'TarChunk's.
+--
+-- @since 0.2.1
 untarChunks :: Monad m => ConduitM ByteString TarChunk m ()
 untarChunks =
     loop 0
