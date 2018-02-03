@@ -11,7 +11,6 @@ module Data.Conduit.Tar
       tar
     , tarEntries
     , untar
-    , untarChunks
     , untarWithFinalizers
     , restoreFile
     , restoreFileInto
@@ -301,6 +300,7 @@ withEntries = peekForever . withEntry
 -- * Old v7 tar format.
 -- * ustar: POSIX 1003.1-1988 format
 -- * and only portions of GNU format:
+--   * Larger values for `fileUserId`, `fileGroupId`, `fileSize` and `fileModTime`.
 --   * 'L' type - long file names, but only up to 4096 chars to prevent DoS attack
 --   * other types are simply discarded
 --
@@ -330,6 +330,7 @@ withFileInfo inner =
                 leftover x
                 throwM $ UnexpectedPayload offset
             ChunkException e -> throwM e
+
 
 -- | Take care of custom GNU tar format.
 handleGnuTarHeader :: MonadThrow m
