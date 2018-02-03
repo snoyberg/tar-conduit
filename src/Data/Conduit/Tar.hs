@@ -68,10 +68,10 @@ import           Data.Conduit.Tar.Unix
 
 headerFilePathBS :: Header -> S.ByteString
 headerFilePathBS Header {..} =
-    if SS.length headerFileNamePrefix > 0
-        then S.concat
+    if SS.null headerFileNamePrefix
+        then fromShort headerFileNameSuffix
+        else S.concat
                  [fromShort headerFileNamePrefix, pathSeparatorS, fromShort headerFileNameSuffix]
-        else fromShort headerFileNameSuffix
 
 -- | Construct a `FilePath` from `headerFileNamePrefix` and `headerFileNameSuffix`.
 --
