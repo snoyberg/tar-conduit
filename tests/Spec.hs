@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE CPP #-}
 module Main where
 
 import Prelude as P
@@ -19,6 +20,12 @@ import Data.Monoid
 import System.IO
 import System.FilePath
 import Control.Exception
+
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative ((<$>), pure)
+#endif
+
+
 
 main :: IO ()
 main = do

@@ -209,7 +209,7 @@ script:
         cd "$PKGVER"
         cabal configure --enable-tests
         cabal build
-        cabal test
+        cabal test --show-details=streaming --log=/dev/stdout
         cd $ORIGDIR
       done
       ;;
