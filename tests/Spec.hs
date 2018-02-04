@@ -19,16 +19,19 @@ import Data.Int
 import Data.Monoid
 import System.IO
 import System.FilePath
+import           System.IO (hSetBuffering, stdout, BufferMode(LineBuffering))
 import Control.Exception
 
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), pure)
+import Data.Word
 #endif
 
 
 
 main :: IO ()
 main = do
+    hSetBuffering stdout LineBuffering
     let baseTmp = "tar-conduit-tests"
     isStack <- doesDirectoryExist ".stack-work"
     let testPaths =
