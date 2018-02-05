@@ -77,7 +77,7 @@ headerFilePathBS Header {..} =
 --
 -- @since 0.1.0
 headerFilePath :: Header -> FilePath
-headerFilePath = S8.unpack . headerFilePathBS
+headerFilePath = decodeFilePath . headerFilePathBS
 
 -- | Get Header file type.
 --
@@ -444,7 +444,7 @@ headerFromFileInfo offset fi = do
         throwM $
         TarCreationError $
         "<headerFromFileInfo>: Offset must always be a multiple of 512 for file: " ++
-        S8.unpack (filePath fi)
+        getFileInfoPath fi
     let (prefix, suffix) = splitPathAt 100 $ filePath fi
     if (SS.length prefix > 155 || SS.null suffix)
         then return $ Left $ FileNameTooLong fi
@@ -458,7 +458,7 @@ headerFromFileInfo offset fi = do
                         throwM $
                         TarCreationError $
                         "<headerFromFileInfo>: Unsupported file type: " ++
-                        show fty ++ " for file: " ++ S8.unpack (filePath fi)
+                        show fty ++ " for file: " ++ getFileInfoPath fi
             return $
                 Right
                     Header
@@ -791,7 +791,7 @@ filePathConduit = do
                     throwM $
                         TarCreationError $
                         "<filePathConduit>: Unsupported file type: " ++
-                        show fty ++ " for file: " ++ S8.unpack (filePath fi)
+                        show fty ++ " for file: " ++ getFileInfoPath fi
             filePathConduit
         Nothing -> return ()
 
@@ -866,6 +866,6 @@ extractTarball tarfp mcd = do
 restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFileInto cd fi =
-    restoreFile fi {filePath = S8.pack (cd </> makeRelative "/" (S8.unpack (filePath fi)))}
+    restoreFile fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
 
 

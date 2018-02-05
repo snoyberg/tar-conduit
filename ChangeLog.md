@@ -1,5 +1,6 @@
 ## 0.2.2 - 2018-02-04
 
+ * Fixed proper unicode filepaths handling.
  * Fixed restoration of symbolic links.
  * Fixed restoring files with long names (>255), that use GNU tar format.
  * Utilizing GNU tar standard implemented support for long (>2097151) values of OwnerId, GroupId,
