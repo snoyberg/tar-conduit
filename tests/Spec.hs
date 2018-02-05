@@ -47,21 +47,21 @@ main = do
             it "content" $ do
                 c <- collectContent "src"
                 tarUntarContent "src" `shouldReturn` c
-        -- describe "tar/untar/tar" $ do
-        --     around (withTempTarFiles baseTmp) $
-        --         it "structure" $ \(fpIn, hIn, outDir, fpOut) -> do
-        --             writeTarball hIn testPaths
-        --             hClose hIn
-        --             extractTarball fpIn (Just outDir)
-        --             curDir <- getCurrentDirectory
-        --             finally
-        --                 (setCurrentDirectory outDir >> createTarball fpOut testPaths)
-        --                 (setCurrentDirectory curDir)
-        --             tb1 <- readTarball fpIn
-        --             tb2 <- readTarball fpOut
-        --             P.length tb1 `shouldBe` P.length tb2
-        --             zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
-        --             zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
+        describe "tar/untar/tar" $ do
+            around (withTempTarFiles baseTmp) $
+                it "structure" $ \(fpIn, hIn, outDir, fpOut) -> do
+                    writeTarball hIn testPaths
+                    hClose hIn
+                    extractTarball fpIn (Just outDir)
+                    curDir <- getCurrentDirectory
+                    finally
+                        (setCurrentDirectory outDir >> createTarball fpOut testPaths)
+                        (setCurrentDirectory curDir)
+                    tb1 <- readTarball fpIn
+                    tb2 <- readTarball fpOut
+                    P.length tb1 `shouldBe` P.length tb2
+                    zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
+                    zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
         describe "ustar" ustarSpec
         describe "GNUtar" gnutarSpec
 
