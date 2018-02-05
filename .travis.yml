@@ -182,7 +182,6 @@ install:
       PACKAGES=$(stack --install-ghc query locals | grep '^ *path' | sed 's@^ *path:@@')
 
       cabal install --only-dependencies --enable-tests --enable-benchmarks --force-reinstalls --ghc-options=-O2 --reorder-goals --max-backjumps=-1 $CABALARGS $PACKAGES
-      while [ true ] ; do echo "Prevent death by Travis due to no output"; sleep 540; done &
       ;;
   esac
   set +ex
@@ -201,7 +200,7 @@ script:
       for dir in $PACKAGES
       do
         cd $dir
-        cabal check || [ "$CABALVER" == "1.16" ]
+        cabal check
         cabal sdist
         PKGVER=$(cabal info . | awk '{print $2;exit}')
         SRC_TGZ=$PKGVER.tar.gz
@@ -210,7 +209,11 @@ script:
         cd "$PKGVER"
         cabal configure --enable-tests
         cabal build
-        cabal test --show-details=streaming --log=/dev/stdout
+        if [ "$CABALVER" = "1.18" ]; then
+          cabal test
+        else
+          cabal test --show-details=streaming --log=/dev/stdout
+        endif
         cd $ORIGDIR
       done
       ;;
