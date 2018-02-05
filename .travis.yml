@@ -213,7 +213,7 @@ script:
           cabal test
         else
           cabal test --show-details=streaming --log=/dev/stdout
-        endif
+        fi
         cd $ORIGDIR
       done
       ;;
