@@ -17,6 +17,9 @@ module Data.Conduit.Tar.Types
     , EpochTime
     , CUid(..)
     , CGid(..)
+    , encodeFilePath
+    , decodeFilePath
+    , getFileInfoPath
     ) where
 
 import           Control.Exception        (Exception)
@@ -25,6 +28,10 @@ import           Data.ByteString.Short    (ShortByteString)
 import           Data.Typeable
 import           Data.Word
 import           System.Posix.Types
+import qualified Data.ByteString.Char8         as S8
+import           Data.Text                     as T
+import           Data.Text.Encoding            as T
+import           Data.Text.Encoding.Error      as T
 #if WINDOWS
 import           Data.Bits
 import           Foreign.Storable
@@ -140,3 +147,11 @@ data TarCreateException
 instance Exception TarCreateException
 
 
+encodeFilePath :: FilePath -> S8.ByteString
+encodeFilePath = T.encodeUtf8 . T.pack
+
+decodeFilePath :: S8.ByteString -> FilePath
+decodeFilePath = T.unpack . T.decodeUtf8With T.lenientDecode
+
+getFileInfoPath :: FileInfo -> String
+getFileInfoPath = decodeFilePath . filePath

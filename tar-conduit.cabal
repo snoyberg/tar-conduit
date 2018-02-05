@@ -19,6 +19,7 @@ library
                      , bytestring
                      , conduit-combinators >= 1.0.8.1
                      , filepath
+                     , text
   default-language:    Haskell2010
   ghc-options:         -Wall
   if os(windows)

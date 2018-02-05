@@ -777,15 +777,15 @@ filePathConduit = do
     mfp <- await
     case mfp of
         Just fp -> do
-            fi <- liftIO $ getFileInfo $ S8.pack fp
+            fi <- liftIO $ getFileInfo fp
             case fileType fi of
                 FTNormal -> do
                     yield (Left fi)
-                    sourceFile (S8.unpack (filePath fi)) .| mapC Right
+                    sourceFile (getFileInfoPath fi) .| mapC Right
                 FTSymbolicLink _ -> yield (Left fi)
                 FTDirectory -> do
                     yield (Left fi)
-                    sourceDirectory (S8.unpack (filePath fi)) .| filePathConduit
+                    sourceDirectory (getFileInfoPath fi) .| filePathConduit
                 fty -> do
                     leftover fp
                     throwM $

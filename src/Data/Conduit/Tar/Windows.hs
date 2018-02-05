@@ -9,26 +9,25 @@ import           Conduit
 import           Control.Monad            (when)
 import           Data.Bits
 import qualified Data.ByteString.Char8    as S8
-import           Data.Conduit.Tar.Types   (FileInfo (..), FileType (..))
+import           Data.Conduit.Tar.Types
 import           Data.Time.Clock.POSIX
 import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
 
 
-getFileInfo :: S8.ByteString -> IO FileInfo
+getFileInfo :: FilePath -> IO FileInfo
 getFileInfo fp = do
-    let fp' = S8.unpack fp
-    fs <- Posix.getSymbolicLinkStatus fp'
+    fs <- Posix.getSymbolicLinkStatus fp
     let uid = fromIntegral $ Posix.fileOwner fs
         gid = fromIntegral $ Posix.fileGroup fs
     (fType, fSize) <-
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
                | Posix.isDirectory fs       -> return (FTDirectory, 0)
-               | otherwise                  -> error $ "Unsupported file type: " ++ fp'
+               | otherwise                  -> error $ "Unsupported file type: " ++ fp
     return FileInfo
-        { filePath      = fp
+        { filePath      = encodeFilePath fp
         , fileUserId    = uid
         , fileUserName  = ""
         , fileGroupId   = gid
@@ -45,18 +44,18 @@ getFileInfo fp = do
 restoreFile :: (MonadResource m) =>
                FileInfo -> ConduitM S8.ByteString (IO ()) m ()
 restoreFile FileInfo {..} = do
-    let filePath' = S8.unpack filePath
+    let fpStr = decodeFilePath filePath
         CTime modTimeEpoch = fileModTime
         modTime = posixSecondsToUTCTime (fromIntegral modTimeEpoch)
     case fileType of
         FTDirectory -> do
-            liftIO $ Dir.createDirectoryIfMissing False filePath'
+            liftIO $ Dir.createDirectoryIfMissing False fpStr
             yield $
-                (Dir.doesDirectoryExist filePath' >>=
-                 (`when` Dir.setModificationTime filePath' modTime))
-        FTNormal -> sinkFile filePath'
+                (Dir.doesDirectoryExist fpStr >>=
+                 (`when` Dir.setModificationTime fpStr modTime))
+        FTNormal -> sinkFile fpStr
         ty -> error $ "Unsupported tar entry type: " ++ show ty
     liftIO $ do
-        Dir.setModificationTime filePath' modTime
-        Posix.setFileMode filePath' fileMode
+        Dir.setModificationTime fpStr modTime
+        Posix.setFileMode fpStr fileMode
 
