@@ -146,12 +146,14 @@ data TarCreateException
     deriving (Show, Typeable)
 instance Exception TarCreateException
 
-
+-- | Convert `FilePath` into a UTF-8 encoded `ByteString`
 encodeFilePath :: FilePath -> S8.ByteString
 encodeFilePath = T.encodeUtf8 . T.pack
 
+-- | Convert UTF-8 encoded `ByteString` back into the `FilePath`.
 decodeFilePath :: S8.ByteString -> FilePath
 decodeFilePath = T.unpack . T.decodeUtf8With T.lenientDecode
 
-getFileInfoPath :: FileInfo -> String
+-- | Get the `FilePath`.
+getFileInfoPath :: FileInfo -> FilePath
 getFileInfoPath = decodeFilePath . filePath
