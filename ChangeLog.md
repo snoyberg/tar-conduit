@@ -1,4 +1,4 @@
-## 0.2.2 - 2018-02-04
+## 0.2.2 - 2018-02-06
 
  * Fixed proper unicode filepaths handling.
  * Fixed restoration of symbolic links.
