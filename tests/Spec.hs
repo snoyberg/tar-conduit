@@ -1,19 +1,37 @@
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE CPP #-}
 module Main where
 
 import Prelude as P
 import Conduit
 import Control.Monad (void, when, zipWithM_)
+import Data.Conduit.List
 import Test.Hspec
+import Test.QuickCheck
 import Data.Conduit.Tar
 import System.Directory
 import Data.ByteString as S
+import Data.ByteString.Char8 as S8
+import Data.Int
+import Data.Monoid
 import System.IO
 import System.FilePath
+import           System.IO (hSetBuffering, stdout, BufferMode(LineBuffering))
 import Control.Exception
+
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative ((<$>), pure)
+import Data.Word
+#endif
+
+
 
 main :: IO ()
 main = do
+    hSetBuffering stdout LineBuffering
     let baseTmp = "tar-conduit-tests"
     isStack <- doesDirectoryExist ".stack-work"
     let testPaths =
@@ -44,6 +62,146 @@ main = do
                     P.length tb1 `shouldBe` P.length tb2
                     zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
                     zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
+        describe "ustar" ustarSpec
+        describe "GNUtar" gnutarSpec
+
+defFileInfo :: FileInfo
+defFileInfo =
+    FileInfo
+    { filePath = "test-file-name"
+    , fileUserId = 1000
+    , fileUserName = "test-user-name"
+    , fileGroupId = 1000
+    , fileGroupName = "test-group-name"
+    , fileMode = 0o644
+    , fileSize = 0
+    , fileType = FTNormal
+    , fileModTime = 123456789
+    }
+
+
+fileInfoExpectation :: [(FileInfo, ByteString)] -> IO ()
+fileInfoExpectation files = do
+    let source = P.concat [[Left fi, Right content] | (fi, content) <- files]
+        collectBack fi = do
+            content <- foldC
+            yield (fi, content)
+    result <- runConduit $ sourceList source .| void tar .| untar collectBack .| sinkList
+    result `shouldBe` files
+
+data GnuTarFile = GnuTarFile FileInfo (Maybe ByteString) deriving (Show, Eq)
+
+asciiGen :: Int -> Gen ByteString
+asciiGen n = S.pack <$> vectorOf n (frequency [(1, pure 0x2f), (20, choose (0x20, 0x7e))])
+
+instance Arbitrary GnuTarFile where
+    arbitrary = do
+        filePathLen <- (`mod` 4090) <$> arbitrary
+        filePath <- ("test-" <>) <$> asciiGen filePathLen
+        NonNegative fileUserId64 <- arbitrary
+        let fileUserId = fromIntegral (fileUserId64 :: Int64)
+        NonNegative fileGroupId64 <- arbitrary
+        let fileGroupId = fromIntegral (fileGroupId64 :: Int64)
+        fileUserNameLen <- (`mod` 32) <$> arbitrary
+        fileUserName <- asciiGen fileUserNameLen
+        fileGroupNameLen <- (`mod` 32) <$> arbitrary
+        fileGroupName <- asciiGen fileGroupNameLen
+        fileMode <- fromIntegral <$> choose (0o000 :: Word, 0o777)
+        -- TODO: use `filePathLen` instead, once long link name 'K' is implemented
+        linkNameLen <- (`mod` 101) <$> arbitrary
+        fileType <-
+            oneof
+                [ pure FTNormal
+                , pure FTDirectory
+                , FTSymbolicLink <$> asciiGen linkNameLen
+                ]
+        (fileSize, mContent) <-
+            case fileType of
+                FTNormal -> do
+                    content <- arbitraryByteString
+                    return (fromIntegral (S.length content), Just content)
+                _ -> return (0, Nothing)
+        fileModTime <- fromIntegral <$> (arbitrary :: Gen Int64)
+        return (GnuTarFile FileInfo {..} mContent)
+
+arbitraryByteString :: Gen ByteString
+arbitraryByteString = do
+    maxLen <- arbitrary
+    len <- (`mod` (maxLen + 1)) <$> arbitrary
+    genFun <- arbitrary
+    let strGen x | x < len = Just (genFun x, x + 1)
+                 | otherwise = Nothing
+    return $ fst $ S.unfoldrN maxLen strGen 0
+
+fileInfoProperty :: [GnuTarFile] -> Property
+fileInfoProperty files = either throw (source ===) eResult
+  where
+    eResult = runConduit $ sourceList source .| void tar .| untar collectBack .| sinkList
+    source =
+        P.concat [Left fi : maybe [] ((: []) . Right) mContent | GnuTarFile fi mContent <- files]
+    collectBack fi = do
+        yield $ Left fi
+        case fileType fi of
+            FTNormal -> do
+                content <- foldC
+                yield $ Right content
+            _ -> return ()
+
+
+emptyFileInfoExpectation :: FileInfo -> IO ()
+emptyFileInfoExpectation fi = fileInfoExpectation [(fi, "")]
+
+ustarSpec :: Spec
+ustarSpec = do
+    it "minimal" $ do
+        emptyFileInfoExpectation defFileInfo
+    it "long file name <255" $ do
+        emptyFileInfoExpectation $
+            defFileInfo {filePath = S8.pack (P.replicate 99 'f' </> P.replicate 99 'o')}
+
+
+gnutarSpec :: Spec
+gnutarSpec = do
+    it "LongLink - a file with long file name" $ do
+        emptyFileInfoExpectation $
+            defFileInfo
+            { filePath =
+                  S8.pack (P.replicate 100 'f' </> P.replicate 100 'o' </> P.replicate 99 'b')
+            }
+    it "LongLink - multiple files with long file names" $ do
+        fileInfoExpectation
+            [ ( defFileInfo
+                { filePath =
+                      S8.pack (P.replicate 100 'f' </> P.replicate 100 'o' </> P.replicate 99 'b')
+                , fileSize = 10
+                }
+              , "1234567890")
+            , ( defFileInfo
+                { filePath =
+                      S8.pack (P.replicate 1000 'g' </> P.replicate 1000 'o' </> P.replicate 99 'b')
+                , fileSize = 11
+                }
+              , "abcxdefghij")
+            ]
+    it "Large User Id" $ do emptyFileInfoExpectation $ defFileInfo {fileUserId = 0o777777777}
+    it "All Large Numeric Values" $ do
+        emptyFileInfoExpectation $
+            defFileInfo
+            { fileUserId = 0x7FFFFFFFFFFFFFFF
+            , fileGroupId = 0x7FFFFFFFFFFFFFFF
+            , fileModTime = fromIntegral (maxBound :: Int64)
+            }
+    it "Negative Values" $ do
+        emptyFileInfoExpectation $ defFileInfo {fileModTime = fromIntegral (minBound :: Int64)}
+        emptyFileInfoExpectation $ defFileInfo {fileModTime = -10}
+        emptyFileInfoExpectation $ defFileInfo {fileUserId = fromIntegral (minBound :: Int64)}
+    it "Negative Size" $
+        (emptyFileInfoExpectation (defFileInfo {fileSize = -10}) `shouldThrow`
+         (\case
+              TarCreationError _ -> True
+              _ -> False))
+    it "tar/untar Property" $ property fileInfoProperty
+
 
 withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c) -> IO c
 withTempTarFiles base =
@@ -78,4 +236,3 @@ collectContent :: FilePath -> IO (ByteString)
 collectContent dir =
     runConduitRes $
     sourceDirectoryDeep False dir .| mapMC (\fp -> runConduit (sourceFileBS fp .| foldC)) .| foldC
-

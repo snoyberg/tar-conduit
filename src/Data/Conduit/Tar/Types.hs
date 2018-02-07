@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE CPP #-}
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
@@ -14,6 +15,11 @@ module Data.Conduit.Tar.Types
     , GroupID
     , DeviceID
     , EpochTime
+    , CUid(..)
+    , CGid(..)
+    , encodeFilePath
+    , decodeFilePath
+    , getFileInfoPath
     ) where
 
 import           Control.Exception        (Exception)
@@ -21,11 +27,44 @@ import           Data.ByteString          (ByteString)
 import           Data.ByteString.Short    (ShortByteString)
 import           Data.Typeable
 import           Data.Word
-
-#if WINDOWS
-import           System.PosixCompat.Types
-#else
 import           System.Posix.Types
+import qualified Data.ByteString.Char8         as S8
+import           Data.Text                     as T
+import           Data.Text.Encoding            as T
+import           Data.Text.Encoding.Error      as T
+#if WINDOWS
+import           Data.Bits
+import           Foreign.Storable
+newtype CUid =
+  CUid Word32
+  deriving ( Bounded
+           , Enum
+           , Eq
+           , Integral
+           , Num
+           , Ord
+           , Read
+           , Real
+           , Show
+           , Bits
+           , Storable
+           )
+newtype CGid =
+  CGid Word32
+  deriving ( Bounded
+           , Enum
+           , Eq
+           , Integral
+           , Num
+           , Ord
+           , Read
+           , Real
+           , Show
+           , Bits
+           , Storable
+           )
+type UserID = CUid
+type GroupID = CGid
 #endif
 
 data FileType
@@ -107,4 +146,14 @@ data TarCreateException
     deriving (Show, Typeable)
 instance Exception TarCreateException
 
+-- | Convert `FilePath` into a UTF-8 encoded `ByteString`
+encodeFilePath :: FilePath -> S8.ByteString
+encodeFilePath = T.encodeUtf8 . T.pack
 
+-- | Convert UTF-8 encoded `ByteString` back into the `FilePath`.
+decodeFilePath :: S8.ByteString -> FilePath
+decodeFilePath = T.unpack . T.decodeUtf8With T.lenientDecode
+
+-- | Get the `FilePath`.
+getFileInfoPath :: FileInfo -> FilePath
+getFileInfoPath = decodeFilePath . filePath

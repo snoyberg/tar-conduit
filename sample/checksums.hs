@@ -15,7 +15,7 @@ import System.Environment
 filedigests :: FilePath -> IO ()
 filedigests fp = runConduitRes (  sourceFileBS fp          -- read the raw file
                                .| ungzip                   -- gunzip
-                               .| CT.untar                 -- decode the tar archive
+                               .| CT.untarChunks           -- decode the tar archive
                                .| CT.withEntries hashentry -- process each file
                                .| printC                   -- print the results
                                )
