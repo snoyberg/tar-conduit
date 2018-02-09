@@ -345,7 +345,7 @@ handleGnuTarHeader h = do
             unless (0 < pSize && pSize <= 4096) $
                 throwM $
                 FileTypeError (headerPayloadOffset h) 'L' $ "Filepath is too long: " ++ show pSize
-            longFileNameBuilder <- payloadsConduit .| sinkBuilder
+            longFileNameBuilder <- payloadsConduit .| foldMapC byteString
             let longFileName = SL.toStrict . SL.init . toLazyByteString $ longFileNameBuilder
             mcNext <- await
             case mcNext of
@@ -771,7 +771,7 @@ tarEntries = do
 -- content. All paths will be decended into recursively.
 --
 -- @since 0.2.0
-filePathConduit :: MonadResource m =>
+filePathConduit :: (MonadThrow m, MonadResource m) =>
                    ConduitM FilePath (Either FileInfo ByteString) m ()
 filePathConduit = do
     mfp <- await
@@ -803,7 +803,7 @@ filePathConduit = do
 -- `filePath`, would be another approach to handling the file paths.
 --
 -- @since 0.2.0
-tarFilePath :: MonadResource m => ConduitM FilePath ByteString m FileOffset
+tarFilePath :: (MonadThrow m, MonadResource m) => ConduitM FilePath ByteString m FileOffset
 tarFilePath = filePathConduit .| tar
 
 

@@ -1,5 +1,5 @@
 name:                tar-conduit
-version:             0.2.2
+version:             0.2.3
 synopsis:            Extract and create tar files using conduit for streaming
 description:         Please see README.md. This is just filler to avoid warnings.
 homepage:            https://github.com/snoyberg/tar-conduit#readme
@@ -17,6 +17,7 @@ library
   exposed-modules:     Data.Conduit.Tar, Data.Conduit.Tar.Types
   build-depends:       base >= 4.7 && < 5
                      , bytestring
+                     , conduit
                      , conduit-combinators >= 1.0.8.1
                      , filepath
                      , text
@@ -42,7 +43,7 @@ test-suite tests
                      , base
                      , bytestring
                      , conduit
-                     , conduit-combinators
+                     , conduit-combinators >= 1.0.8.1
                      , directory
                      , filepath
                      , hspec
@@ -57,16 +58,16 @@ test-suite space
   main-is: Space.hs
   hs-source-dirs: tests
   build-depends: base
-               , weigh
-               , deepseq
-               , containers
                , bytestring
+               , conduit
+               , conduit-combinators >= 1.0.8.1
+               , containers
+               , deepseq
                , directory
                , filepath
                , hspec
                , tar-conduit
-               , conduit-combinators
-               , conduit
+               , weigh
 
 benchmark time
   default-language:    Haskell2010
@@ -75,16 +76,16 @@ benchmark time
   main-is: Time.hs
   hs-source-dirs: tests
   build-depends: base
+               , bytestring
+               , conduit
+               , conduit-combinators >= 1.0.8.1
+               , containers
                , criterion
                , deepseq
-               , containers
-               , bytestring
                , directory
                , filepath
                , hspec
                , tar-conduit
-               , conduit-combinators
-               , conduit
 
 source-repository head
   type:     git

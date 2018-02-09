@@ -1,30 +1,31 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE CPP               #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE RecordWildCards   #-}
 module Main where
 
-import Prelude as P
-import Conduit
-import Control.Monad (void, when, zipWithM_)
-import Data.Conduit.List
-import Test.Hspec
-import Test.QuickCheck
-import Data.Conduit.Tar
-import System.Directory
-import Data.ByteString as S
-import Data.ByteString.Char8 as S8
-import Data.Int
-import Data.Monoid
-import System.IO
-import System.FilePath
-import           System.IO (hSetBuffering, stdout, BufferMode(LineBuffering))
-import Control.Exception
+import           Conduit
+import           Control.Exception
+import           Control.Monad         (void, when, zipWithM_)
+import           Data.ByteString       as S
+import           Data.ByteString.Char8 as S8
+import           Data.Conduit.List
+import           Data.Conduit.Tar
+import           Data.Int
+import           Data.Monoid
+import           Prelude               as P
+import           System.Directory
+import           System.FilePath
+import           System.IO
+import           System.IO             (BufferMode (LineBuffering),
+                                        hSetBuffering, stdout)
+import           Test.Hspec
+import           Test.QuickCheck
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<$>), pure)
-import Data.Word
+import           Control.Applicative   (pure, (<$>))
+import           Data.Word
 #endif
 
 
@@ -220,8 +221,7 @@ withTempTarFiles base =
 
 
 readTarball
-  :: (MonadIO m, MonadThrow m, MonadBaseControl IO m) =>
-     FilePath -> m [(FileInfo, Maybe ByteString)]
+  :: FilePath -> IO [(FileInfo, Maybe ByteString)]
 readTarball fp = runConduitRes $ sourceFileBS fp .| untar grabBoth .| sinkList
   where
     grabBoth fi =
