@@ -68,10 +68,10 @@ import           Data.Conduit.Tar.Unix
 
 headerFilePathBS :: Header -> S.ByteString
 headerFilePathBS Header {..} =
-    if SS.length headerFileNamePrefix > 0
-        then S.concat
+    if SS.null headerFileNamePrefix
+        then fromShort headerFileNameSuffix
+        else S.concat
                  [fromShort headerFileNamePrefix, pathSeparatorS, fromShort headerFileNameSuffix]
-        else fromShort headerFileNameSuffix
 
 -- | Construct a `FilePath` from `headerFileNamePrefix` and `headerFileNameSuffix`.
 --
@@ -98,7 +98,7 @@ headerFileType h =
 parseHeader :: FileOffset -> ByteString -> Either TarException Header
 parseHeader offset bs = do
     unless (S.length bs == 512) $ Left $ IncompleteHeader offset
-    let checksumBytes = S.take 8 $ S.drop 148 bs
+    let checksumBytes = BU.unsafeTake 8 $ BU.unsafeDrop 148 bs
         expectedChecksum = parseOctal checksumBytes
         actualChecksum = bsum bs - bsum checksumBytes + 8 * space
         magicVersion = toShort $ BU.unsafeTake 8 $ BU.unsafeDrop 257 bs
@@ -128,7 +128,7 @@ parseHeader offset bs = do
     bsum :: ByteString -> Int
     bsum = S.foldl' (\c n -> c + fromIntegral n) 0
 
-    getShort off len = toShort $ S.takeWhile (/= 0) $ S.take len $ S.drop off bs
+    getShort off len = toShort $ S.takeWhile (/= 0) $ BU.unsafeTake len $ BU.unsafeDrop off bs
 
     getOctal :: Integral a => Int -> Int -> a
     getOctal off len = parseOctal $ BU.unsafeTake len $ BU.unsafeDrop off bs
