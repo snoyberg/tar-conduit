@@ -246,7 +246,7 @@ readGzipTarball fp =
 grabBoth
   :: (Monad m)
   => FileInfo
-  -> ConduitT ByteString (FileInfo, Maybe ByteString) m ()
+  -> ConduitM ByteString (FileInfo, Maybe ByteString) m ()
 grabBoth fi =
   case fileType fi of
     FTNormal -> do
