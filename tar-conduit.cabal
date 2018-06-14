@@ -9,7 +9,7 @@ author:              Michael Snoyman
 maintainer:          michael@snoyman.com, bartavelle@gmail.com, alexey@kuleshevi.ch
 category:            Data Conduit
 build-type:          Simple
-extra-source-files:  README.md ChangeLog.md
+extra-source-files:  README.md ChangeLog.md tests/files/libpq-0.3.tar.gz
 cabal-version:       >=1.10
 
 library
