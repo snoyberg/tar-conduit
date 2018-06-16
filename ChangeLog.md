@@ -1,5 +1,6 @@
 ## 0.2.3.1 - 2018-06-06
  * Fixed drops associated payload for unsupported headers ((https://github.com/snoyberg/tar-conduit/issues/17)) ([PR 18](https://github.com/snoyberg/tar-conduit/pull/18))
+ * Dropped support for GHC 7/Stack LTS-2, LTS-3, LTS-6
 
 ## 0.2.3 - 2018-02-10
 
