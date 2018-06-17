@@ -28,7 +28,7 @@ import           Control.Applicative   (pure, (<$>))
 import           Data.Word
 #endif
 
-
+import Data.Conduit.Zlib (ungzip)
 
 main :: IO ()
 main = do
@@ -65,6 +65,19 @@ main = do
                     zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
         describe "ustar" ustarSpec
         describe "GNUtar" gnutarSpec
+        describe "unsupported headers" $ do
+            it "associated payload is discarded" $ do
+              contents <- readGzipTarball "./tests/files/libpq-0.3.tar.gz"
+              let fileNames = filePath . fst  <$> contents
+              fileNames `shouldContain` [ "libpq-0.3/"
+                                        , "libpq-0.3/.gitignore"
+                                        , "libpq-0.3/Database/"
+                                        , "libpq-0.3/Database/PQ.hsc"
+                                        , "libpq-0.3/LICENSE"
+                                        , "libpq-0.3/README.md"
+                                        , "libpq-0.3/Setup.hs"
+                                        , "libpq-0.3/libpq.cabal"
+                                        ]
 
 defFileInfo :: FileInfo
 defFileInfo =
@@ -223,14 +236,23 @@ withTempTarFiles base =
 readTarball
   :: FilePath -> IO [(FileInfo, Maybe ByteString)]
 readTarball fp = runConduitRes $ sourceFileBS fp .| untar grabBoth .| sinkList
-  where
-    grabBoth fi =
-        case fileType fi of
-            FTNormal -> do
-                content <- foldC
-                yield (fi, Just content)
-            _ -> yield (fi, Nothing)
 
+readGzipTarball
+  :: FilePath
+  -> IO [(FileInfo, Maybe ByteString)]
+readGzipTarball fp =
+  runConduitRes $ sourceFileBS fp .| ungzip .| untar grabBoth .| sinkList
+
+grabBoth
+  :: (Monad m)
+  => FileInfo
+  -> ConduitM ByteString (FileInfo, Maybe ByteString) m ()
+grabBoth fi =
+  case fileType fi of
+    FTNormal -> do
+        content <- foldC
+        yield (fi, Just content)
+    _ -> yield (fi, Nothing)
 
 collectContent :: FilePath -> IO (ByteString)
 collectContent dir =

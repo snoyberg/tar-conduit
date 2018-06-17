@@ -322,7 +322,9 @@ withFileInfo inner =
                 | headerLinkIndicator h >= 55 -> do
                     if (headerMagicVersion h == gnuTarMagicVersion)
                         then handleGnuTarHeader h >>= maybe start go
-                        else start
+                        else dropWhileC (\x' -> case x' of
+                                           ChunkPayload _ _ -> True
+                                           _                -> False) >> start
             ChunkHeader h -> do
                 payloadsConduit .| (inner (fileInfoFromHeader h) <* sinkNull)
                 start
@@ -330,7 +332,7 @@ withFileInfo inner =
                 leftover x
                 throwM $ UnexpectedPayload offset
             ChunkException e -> throwM e
-
+      
 
 -- | Take care of custom GNU tar format.
 handleGnuTarHeader :: MonadThrow m
@@ -867,5 +869,3 @@ restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFileInto cd fi =
     restoreFile fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
-
-
