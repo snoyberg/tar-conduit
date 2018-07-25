@@ -29,11 +29,13 @@ module Data.Conduit.Tar
     , createTarball
     , writeTarball
     , extractTarball
+    , extractTarballLenient
       -- * Types
     , module Data.Conduit.Tar.Types
     ) where
 
 import           Conduit                  as C
+import           Control.Exception.Safe   (catchAny)
 import           Control.Exception        (assert)
 import           Control.Monad            (unless, void)
 import           Data.Bits
@@ -869,3 +871,24 @@ restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
 restoreFileInto cd fi =
     restoreFile fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
+
+
+-- | Same as `extractTarball`, but ignores unsupported file types and all possible exception during
+-- file restoration will be simply printed to stdout.
+--
+-- @since 0.2.4
+extractTarballLenient :: FilePath -- ^ Filename for the tarball
+                   -> Maybe FilePath -- ^ Folder where tarball should be extract
+                   -- to. Default is the current path
+                   -> IO ()
+extractTarballLenient tarfp mcd = do
+    cd <- maybe getCurrentDirectory return mcd
+    createDirectoryIfMissing True cd
+    let safeRestore fi = catchAny (restoreFileInto cd fi) $ \ exc -> yield (print exc)
+    let myRestoreFileInto fi =
+            case fileType fi of
+                FTNormal -> safeRestore fi
+                FTSymbolicLink _ -> safeRestore fi
+                FTDirectory -> safeRestore fi
+                _ -> sinkNull
+    runConduitRes $ sourceFileBS tarfp .| untarWithFinalizers myRestoreFileInto
