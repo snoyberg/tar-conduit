@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -35,7 +36,7 @@ module Data.Conduit.Tar
     ) where
 
 import           Conduit                  as C
-import           Control.Exception        (assert)
+import           Control.Exception        (assert, SomeException)
 import           Control.Monad            (unless, void)
 import           Data.Bits
 import           Data.ByteString          (ByteString)
@@ -398,6 +399,19 @@ untarWithFinalizers ::
 untarWithFinalizers inner = do
     finilizers <- untar inner .| foldlC (>>) (return ())
     liftIO finilizers
+
+
+-- | Same as `untarWithFinalizers`, but will also produce a list of any exceptions that might have
+-- occured during restoration process.
+--
+-- @since 0.2.4
+untarWithExceptions ::
+       (MonadThrow m, MonadIO m)
+    => (FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ())
+    -> ConduitM ByteString c m [(FileInfo, [SomeException])]
+untarWithExceptions inner = do
+    finalizers <- untar inner .| C.foldMapC (fmap pure)
+    filter (not . null . snd) <$> liftIO finalizers
 
 
 --------------------------------------------------------------------------------
@@ -868,24 +882,26 @@ extractTarball tarfp mcd = do
 -- relative to the supplied folder.
 restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
-restoreFileInto cd fi =
+restoreFileInto cd fi = restoreFileIntoLenient cd fi .| C.mapC void
+
+-- | Restore all files into a folder. Absolute file paths will be turned into
+-- relative to the supplied folder.
+restoreFileIntoLenient :: MonadResource m =>
+    FilePath -> FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFileIntoLenient cd fi =
     restoreFile fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
 
 
--- | Same as `extractTarball`, but ignores unsupported file types.
+-- | Same as `extractTarball`, but ignores possible extraction errors. It can still throw a
+-- `TarException` if the tarball is corrupt or malformed.
 --
 -- @since 0.2.4
 extractTarballLenient :: FilePath -- ^ Filename for the tarball
                    -> Maybe FilePath -- ^ Folder where tarball should be extract
                    -- to. Default is the current path
-                   -> IO ()
+                   -> IO [(FileInfo, [SomeException])]
 extractTarballLenient tarfp mcd = do
     cd <- maybe getCurrentDirectory return mcd
     createDirectoryIfMissing True cd
-    let myRestoreFileInto fi =
-            case fileType fi of
-                FTNormal -> restoreFileInto cd fi
-                FTSymbolicLink _ -> restoreFileInto cd fi
-                FTDirectory -> restoreFileInto cd fi
-                _ -> sinkNull
-    runConduitRes $ sourceFileBS tarfp .| untarWithFinalizers myRestoreFileInto
+    runConduitRes $
+        sourceFileBS tarfp .| untarWithExceptions (restoreFileIntoLenient cd)

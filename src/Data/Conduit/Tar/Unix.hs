@@ -9,9 +9,10 @@ module Data.Conduit.Tar.Unix
 
 import           Conduit
 import           Control.Exception.Safe
-import           Control.Monad                 (void, when)
+import           Control.Monad                 (when, unless)
 import           Data.Bits
 import qualified Data.ByteString.Char8         as S8
+import           Data.Either
 import           Data.Conduit.Tar.Types
 import           Foreign.C.Types               (CTime (..))
 import qualified System.Directory              as Dir
@@ -58,36 +59,44 @@ getFileInfo fpStr = do
 -- directories, which can be executed after the pipeline has finished and all files have been
 -- written to disk.
 restoreFile :: (MonadResource m) =>
-               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
-restoreFile FileInfo {..} = do
+               FileInfo -> ConduitM S8.ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFile fi@FileInfo {..} = do
     let fpStr = decodeFilePath filePath
         restorePermissions = do
-            void $ tryAny $ Posix.setOwnerAndGroup fpStr fileUserId fileGroupId
-            void $ tryAny $ Posix.setFileMode fpStr fileMode
+            eExc1 <- tryAny $ Posix.setOwnerAndGroup fpStr fileUserId fileGroupId
+            eExc2 <- tryAny $ Posix.setFileMode fpStr fileMode
+            return $! fst $ partitionEithers [eExc1, eExc2]
     case fileType of
         FTDirectory -> do
-            liftIO $ do
+            excs <- liftIO $ do
                 Dir.createDirectoryIfMissing False fpStr
                 restorePermissions
-            yield $
-                (Dir.doesDirectoryExist fpStr >>=
-                 (`when` Posix.setFileTimes fpStr fileModTime fileModTime))
-        FTSymbolicLink link ->
-            liftIO $ do
+            yield $ do
+                eExc <- tryAny (Dir.doesDirectoryExist fpStr >>=
+                                (`when` Posix.setFileTimes fpStr fileModTime fileModTime))
+                return (fi, either ((excs ++) . pure) (const excs) eExc)
+        FTSymbolicLink link -> do
+            excs <- liftIO $ do
                 -- Try to unlink any existing file/symlink
-                _ <- tryAny $ Posix.removeLink fpStr
+                eExc1 <- tryAny $ Posix.removeLink fpStr
                 Posix.createSymbolicLink (decodeFilePath link) fpStr
-                _ <- tryAny $ Posix.setSymbolicLinkOwnerAndGroup fpStr fileUserId fileGroupId
+                eExc2 <- tryAny $ Posix.setSymbolicLinkOwnerAndGroup fpStr fileUserId fileGroupId
                 -- Try best effort in setting symbolic link modification time.
 #if MIN_VERSION_unix(2,7,0)
                 let CTime epochInt32 = fileModTime
                     unixModTime = fromInteger (fromIntegral epochInt32)
-                void $ tryAny $ Posix.setSymbolicLinkTimesHiRes fpStr unixModTime unixModTime
+                eExc3 <- tryAny $ Posix.setSymbolicLinkTimesHiRes fpStr unixModTime unixModTime
+                return $ fst $ partitionEithers [eExc1, eExc2, eExc3]
+#else
+                return $ fst $ partitionEithers [eExc1, eExc2]
 #endif
+            unless (null excs) $ yield (return (fi, excs))
         FTNormal -> do
             sinkFile fpStr
-            liftIO $ do
-                restorePermissions
-                Posix.setFileTimes fpStr fileModTime fileModTime
-        ty -> error $ "Unsupported tar entry type: " ++ show ty
+            excs <- liftIO $ do
+                excs <- restorePermissions
+                eExc <- tryAny $ Posix.setFileTimes fpStr fileModTime fileModTime
+                return (either ((excs ++) . pure) (const excs) eExc)
+            unless (null excs) $ yield (return (fi, excs))
+        ty -> yield $ return (fi, [toException $ UnsupportedType ty])
 
