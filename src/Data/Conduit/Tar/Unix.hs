@@ -18,7 +18,7 @@ import           Foreign.C.Types               (CTime (..))
 import qualified System.Directory              as Dir
 import qualified System.Posix.Files            as Posix
 import qualified System.Posix.User             as Posix
-
+import qualified System.FilePath.Posix         as Posix
 
 getFileInfo :: FilePath -> IO FileInfo
 getFileInfo fpStr = do
@@ -71,7 +71,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
     case fileType of
         FTDirectory -> do
             excs <- liftIO $ do
-                Dir.createDirectoryIfMissing False fpStr
+                Dir.createDirectoryIfMissing True fpStr
                 restorePermissions
             yield $ do
                 eExc <- tryAnyCond (Dir.doesDirectoryExist fpStr >>=
@@ -91,13 +91,32 @@ restoreFileInternal lenient fi@FileInfo {..} = do
 #endif
                 return $ fst $ partitionEithers [eExc1, eExc2]
             unless (null excs) $ yield (return (fi, excs))
+        FTHardLink link -> do
+            excs <- liftIO $ do
+                let linkedFp = decodeFilePath link
+                when lenient $ do
+                    linkedFileExists <- Posix.fileExist linkedFp
+                    -- If the linked file does not exist (yet), we cannot create a hard link.
+                    -- Try to "pre-create" it.
+                    unless linkedFileExists $ do
+                        Dir.createDirectoryIfMissing True $ Posix.takeDirectory linkedFp
+                        writeFile linkedFp ""
+                Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
+                -- Try to unlink any existing file/hard link
+                void $ tryAny $ Posix.removeLink fpStr
+                Posix.createLink linkedFp fpStr
+                liftIO $ do
+                    excs <- restorePermissions
+                    eExc <- tryAnyCond $ Posix.setFileTimes fpStr fileModTime fileModTime
+                    return (either ((excs ++) . pure) (const excs) eExc)
+            unless (null excs) $ yield (return (fi, excs))
         FTNormal -> do
             sinkFile fpStr
             excs <- liftIO $ do
                 excs <- restorePermissions
                 eExc <- tryAnyCond $ Posix.setFileTimes fpStr fileModTime fileModTime
                 return (either ((excs ++) . pure) (const excs) eExc)
-            unless (null excs) $ yield (return (fi, excs))
+            unless (null excs) $ yield $ return (fi, excs)
         ty -> do
             let exc = UnsupportedType ty
             unless lenient $ liftIO $ throwM exc

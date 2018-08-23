@@ -130,6 +130,7 @@ instance Arbitrary GnuTarFile where
                 [ pure FTNormal
                 , pure FTDirectory
                 , FTSymbolicLink <$> asciiGen linkNameLen
+                , FTHardLink <$> asciiGen linkNameLen
                 ]
         (fileSize, mContent) <-
             case fileType of
