@@ -845,8 +845,10 @@ writeTarball tarHandle dirs = do
     runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkHandle tarHandle
 
 
+-- always use forward slash, see
+-- https://github.com/snoyberg/tar-conduit/issues/21
 pathSeparatorS :: ByteString
-pathSeparatorS = S8.singleton pathSeparator
+pathSeparatorS = "/" -- S8.singleton pathSeparator
 
 
 fileInfoFromHeader :: Header -> FileInfo
