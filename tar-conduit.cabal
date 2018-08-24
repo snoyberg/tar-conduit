@@ -1,5 +1,5 @@
 name:                tar-conduit
-version:             0.2.4
+version:             0.2.5
 synopsis:            Extract and create tar files using conduit for streaming
 description:         Please see README.md. This is just filler to avoid warnings.
 homepage:            https://github.com/snoyberg/tar-conduit#readme
