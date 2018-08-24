@@ -16,7 +16,7 @@ import           Data.Int
 import           Data.Monoid
 import           Prelude               as P
 import           System.Directory
-import           System.FilePath
+import           System.FilePath.Posix -- always use forward slashes
 import           System.IO
 import           System.IO             (BufferMode (LineBuffering),
                                         hSetBuffering, stdout)
