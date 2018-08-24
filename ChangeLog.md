@@ -1,3 +1,8 @@
+# Changelog for tar-conduit
+
+## 0.2.5 - 2018-08-24
+ * Use forward slashes on Windows too, see [issue #21](https://github.com/snoyberg/tar-conduit/issues/21)
+
 ## 0.2.4 - 2018-07-25
  * Addition of `extractTarballLenient`
 
