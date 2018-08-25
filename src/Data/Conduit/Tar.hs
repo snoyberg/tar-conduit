@@ -878,18 +878,22 @@ extractTarball tarfp mcd = do
     runConduitRes $ sourceFileBS tarfp .| untarWithFinalizers (restoreFileInto cd)
 
 
+prependDirectory :: FilePath -> FileInfo -> FileInfo
+prependDirectory cd fi =
+    fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
+
+
 -- | Restore all files into a folder. Absolute file paths will be turned into
 -- relative to the supplied folder.
 restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
-restoreFileInto cd fi = restoreFileIntoLenient cd fi .| C.mapC void
+restoreFileInto cd = restoreFile . prependDirectory cd
 
--- | Restore all files into a folder. Absolute file paths will be turned into
--- relative to the supplied folder.
+-- | Restore all files into a folder. Absolute file paths will be turned into relative to the
+-- supplied folder. Yields a list with exceptions instead of throwing them.
 restoreFileIntoLenient :: MonadResource m =>
     FilePath -> FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ()
-restoreFileIntoLenient cd fi =
-    restoreFile fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
+restoreFileIntoLenient cd = restoreFileWithErrors True . prependDirectory cd
 
 
 -- | Same as `extractTarball`, but ignores possible extraction errors. It can still throw a
