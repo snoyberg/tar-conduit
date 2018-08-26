@@ -2,14 +2,16 @@
 {-# LANGUAGE RecordWildCards   #-}
 module Data.Conduit.Tar.Windows
     ( getFileInfo
-    , restoreFile
+    , restoreFileInternal
     ) where
 
 import           Conduit
-import           Control.Monad            (when)
+import           Control.Monad            (when, unless)
+import           Control.Exception.Safe   (tryAny, SomeException, toException)
 import           Data.Bits
 import qualified Data.ByteString.Char8    as S8
 import           Data.Conduit.Tar.Types
+import           Data.Either              (partitionEithers)
 import           Data.Time.Clock.POSIX
 import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
@@ -38,24 +40,38 @@ getFileInfo fp = do
         , fileModTime   = Posix.modificationTime fs
         }
 
--- | Restore files onto the file system. Produces actions that will set the modification time on the
--- directories, which can be executed after the pipeline has finished and all files have been
--- written to disk.
-restoreFile :: (MonadResource m) =>
-               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
-restoreFile FileInfo {..} = do
+
+
+-- | See 'Data.Conduit.Tar.restoreFileWithErrors' for documentation
+restoreFileInternal ::
+       (MonadResource m)
+    => Bool
+    -> FileInfo
+    -> ConduitM S8.ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFileInternal lenient fi@FileInfo {..} = do
     let fpStr = decodeFilePath filePath
+        tryAnyCond action = if lenient then tryAny action else fmap Right action
         CTime modTimeEpoch = fileModTime
         modTime = posixSecondsToUTCTime (fromIntegral modTimeEpoch)
+        restoreTimeAndMode = do
+            eExc2 <- tryAnyCond $ Dir.setModificationTime fpStr modTime
+            eExc1 <- tryAnyCond $ Posix.setFileMode fpStr fileMode
+            return $! fst $ partitionEithers [eExc1, eExc2]
     case fileType of
         FTDirectory -> do
-            liftIO $ Dir.createDirectoryIfMissing False fpStr
-            yield $
-                (Dir.doesDirectoryExist fpStr >>=
-                 (`when` Dir.setModificationTime fpStr modTime))
-        FTNormal -> sinkFile fpStr
-        ty -> error $ "Unsupported tar entry type: " ++ show ty
-    liftIO $ do
-        Dir.setModificationTime fpStr modTime
-        Posix.setFileMode fpStr fileMode
+            excs <- liftIO $ do
+                Dir.createDirectoryIfMissing False fpStr
+                restoreTimeAndMode
+            yield $ do
+                eExc <- tryAnyCond (Dir.doesDirectoryExist fpStr >>=
+                                    (`when` Dir.setModificationTime fpStr modTime))
+                return (fi, either ((excs ++) . pure) (const excs) eExc)
+        FTNormal -> do
+            sinkFile fpStr
+            excs <- liftIO $ restoreTimeAndMode
+            unless (null excs) $ yield $ return (fi, excs)
+        ty -> do
+            let exc = UnsupportedType ty
+            unless lenient $ liftIO $ throwM exc
+            yield $ return (fi, [toException exc])
 

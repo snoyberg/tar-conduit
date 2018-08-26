@@ -15,6 +15,7 @@ module Data.Conduit.Tar
     , untarWithFinalizers
     , restoreFile
     , restoreFileInto
+    , restoreFileWithErrors
     -- ** Operate on Chunks
     , untarChunks
     , withEntry
@@ -909,3 +910,24 @@ extractTarballLenient tarfp mcd = do
     createDirectoryIfMissing True cd
     runConduitRes $
         sourceFileBS tarfp .| untarWithExceptions (restoreFileIntoLenient cd)
+
+
+
+-- | Restore files onto the file system. Produces actions that will set the modification time on the
+-- directories, which can be executed after the pipeline has finished and all files have been
+-- written to disk.
+restoreFile :: (MonadResource m) =>
+               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
+restoreFile fi = restoreFileWithErrors False fi .| mapC void
+
+
+-- | Restore files onto the file system, much in the same way `restoreFile` does it, except with
+-- ability to ignore restoring problematic files and report errors that occured as a list of
+-- exceptions, which will be returned as a list when finilizer executed. If a list is empty, it
+-- means, that no errors occured and a file only had a finilizer associated with it.
+restoreFileWithErrors ::
+       (MonadResource m)
+    => Bool
+    -> FileInfo
+    -> ConduitM S8.ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFileWithErrors = restoreFileInternal
