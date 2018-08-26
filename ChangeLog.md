@@ -1,4 +1,5 @@
-## 0.2.4 - 2018-07-25
+## 0.2.4 - 2018-08-28
+ * Use forward slashes on Windows too, see [issue #21](https://github.com/snoyberg/tar-conduit/issues/21)
  * Addition of `extractTarballLenient`
 
 ## 0.2.3.1 - 2018-06-06

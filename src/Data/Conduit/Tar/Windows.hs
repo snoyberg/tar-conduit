@@ -54,8 +54,8 @@ restoreFileInternal lenient fi@FileInfo {..} = do
         CTime modTimeEpoch = fileModTime
         modTime = posixSecondsToUTCTime (fromIntegral modTimeEpoch)
         restoreTimeAndMode = do
-            eExc2 <- tryAnyCond $ Dir.setModificationTime fpStr modTime
             eExc1 <- tryAnyCond $ Posix.setFileMode fpStr fileMode
+            eExc2 <- tryAnyCond $ Dir.setModificationTime fpStr modTime
             return $! fst $ partitionEithers [eExc1, eExc2]
     case fileType of
         FTDirectory -> do

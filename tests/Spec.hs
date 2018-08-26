@@ -13,10 +13,12 @@ import           Data.ByteString.Char8 as S8
 import           Data.Conduit.List
 import           Data.Conduit.Tar
 import           Data.Int
+import           Data.List             (sortOn)
 import           Data.Monoid
 import           Prelude               as P
 import           System.Directory
-import           System.FilePath.Posix -- always use forward slashes
+import qualified System.FilePath as Host
+import qualified System.FilePath.Posix as Posix -- always use forward slashes
 import           System.IO
 import           System.IO             (BufferMode (LineBuffering),
                                         hSetBuffering, stdout)
@@ -58,8 +60,8 @@ main = do
                     finally
                         (setCurrentDirectory outDir >> createTarball fpOut testPaths)
                         (setCurrentDirectory curDir)
-                    tb1 <- readTarball fpIn
-                    tb2 <- readTarball fpOut
+                    tb1 <- readTarballSorted fpIn
+                    tb2 <- readTarballSorted fpOut
                     P.length tb1 `shouldBe` P.length tb2
                     zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
                     zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
@@ -111,7 +113,7 @@ asciiGen n = S.pack <$> vectorOf n (frequency [(1, pure 0x2f), (20, choose (0x20
 instance Arbitrary GnuTarFile where
     arbitrary = do
         filePathLen <- (`mod` 4090) <$> arbitrary
-        filePath <- ("test-" <>) <$> asciiGen filePathLen
+        filePath <- ("test-" <>) . S8.filter (/= ('\\')) <$> asciiGen filePathLen
         NonNegative fileUserId64 <- arbitrary
         let fileUserId = fromIntegral (fileUserId64 :: Int64)
         NonNegative fileGroupId64 <- arbitrary
@@ -171,7 +173,7 @@ ustarSpec = do
         emptyFileInfoExpectation defFileInfo
     it "long file name <255" $ do
         emptyFileInfoExpectation $
-            defFileInfo {filePath = S8.pack (P.replicate 99 'f' </> P.replicate 99 'o')}
+            defFileInfo {filePath = S8.pack (P.replicate 99 'f' Posix.</> P.replicate 99 'o')}
 
 
 gnutarSpec :: Spec
@@ -180,19 +182,25 @@ gnutarSpec = do
         emptyFileInfoExpectation $
             defFileInfo
             { filePath =
-                  S8.pack (P.replicate 100 'f' </> P.replicate 100 'o' </> P.replicate 99 'b')
+                  S8.pack (P.replicate 100 'f' Posix.</>
+                           P.replicate 100 'o' Posix.</>
+                           P.replicate 99 'b')
             }
     it "LongLink - multiple files with long file names" $ do
         fileInfoExpectation
             [ ( defFileInfo
                 { filePath =
-                      S8.pack (P.replicate 100 'f' </> P.replicate 100 'o' </> P.replicate 99 'b')
+                      S8.pack (P.replicate 100 'f' Posix.</>
+                               P.replicate 100 'o' Posix.</>
+                               P.replicate 99 'b')
                 , fileSize = 10
                 }
               , "1234567890")
             , ( defFileInfo
                 { filePath =
-                      S8.pack (P.replicate 1000 'g' </> P.replicate 1000 'o' </> P.replicate 99 'b')
+                      S8.pack (P.replicate 1000 'g' Posix.</>
+                               P.replicate 1000 'o' Posix.</>
+                               P.replicate 99 'b')
                 , fileSize = 11
                 }
               , "abcxdefghij")
@@ -221,9 +229,9 @@ withTempTarFiles :: FilePath -> ((FilePath, Handle, FilePath, FilePath) -> IO c)
 withTempTarFiles base =
     bracket
         (do tmpDir <- getTemporaryDirectory
-            (fp1, h1) <- openBinaryTempFile tmpDir (addExtension base ".tar")
-            let outPath = dropExtension fp1 ++ ".out"
-            return (fp1, h1, outPath, addExtension outPath ".tar")
+            (fp1, h1) <- openBinaryTempFile tmpDir (Host.addExtension base ".tar")
+            let outPath = Host.dropExtension fp1 ++ ".out"
+            return (fp1, h1, outPath, Host.addExtension outPath ".tar")
         )
         (\(fp, h, dirOut, fpOut) -> do
              hClose h
@@ -232,10 +240,14 @@ withTempTarFiles base =
              doesFileExist fpOut >>= (`when` removeFile fpOut)
         )
 
-
-readTarball
+-- | Collects all of the files and direcotries from the tarball. Then all of them get sorted, since
+-- apparently Windows has no guaranteed order the files within a directory will be listed in upon a
+-- tarball creation.
+readTarballSorted
   :: FilePath -> IO [(FileInfo, Maybe ByteString)]
-readTarball fp = runConduitRes $ sourceFileBS fp .| untar grabBoth .| sinkList
+readTarballSorted fp =
+  sortOn (filePath . fst) <$>
+  (runConduitRes $ sourceFileBS fp .| untar grabBoth .| sinkList)
 
 readGzipTarball
   :: FilePath
