@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -14,6 +15,7 @@ module Data.Conduit.Tar
     , untarWithFinalizers
     , restoreFile
     , restoreFileInto
+    , restoreFileWithErrors
     -- ** Operate on Chunks
     , untarChunks
     , withEntry
@@ -35,7 +37,7 @@ module Data.Conduit.Tar
     ) where
 
 import           Conduit                  as C
-import           Control.Exception        (assert)
+import           Control.Exception        (assert, SomeException)
 import           Control.Monad            (unless, void)
 import           Data.Bits
 import           Data.ByteString          (ByteString)
@@ -398,6 +400,19 @@ untarWithFinalizers ::
 untarWithFinalizers inner = do
     finilizers <- untar inner .| foldlC (>>) (return ())
     liftIO finilizers
+
+
+-- | Same as `untarWithFinalizers`, but will also produce a list of any exceptions that might have
+-- occured during restoration process.
+--
+-- @since 0.2.4
+untarWithExceptions ::
+       (MonadThrow m, MonadIO m)
+    => (FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ())
+    -> ConduitM ByteString c m [(FileInfo, [SomeException])]
+untarWithExceptions inner = do
+    finalizers <- untar inner .| C.foldMapC (fmap pure)
+    filter (not . null . snd) <$> liftIO finalizers
 
 
 --------------------------------------------------------------------------------
@@ -830,8 +845,10 @@ writeTarball tarHandle dirs = do
     runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkHandle tarHandle
 
 
+-- always use forward slash, see
+-- https://github.com/snoyberg/tar-conduit/issues/21
 pathSeparatorS :: ByteString
-pathSeparatorS = S8.singleton pathSeparator
+pathSeparatorS = "/" -- S8.singleton pathSeparator
 
 
 fileInfoFromHeader :: Header -> FileInfo
@@ -864,28 +881,55 @@ extractTarball tarfp mcd = do
     runConduitRes $ sourceFileBS tarfp .| untarWithFinalizers (restoreFileInto cd)
 
 
+prependDirectory :: FilePath -> FileInfo -> FileInfo
+prependDirectory cd fi =
+    fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
+
+
 -- | Restore all files into a folder. Absolute file paths will be turned into
 -- relative to the supplied folder.
 restoreFileInto :: MonadResource m =>
                    FilePath -> FileInfo -> ConduitM ByteString (IO ()) m ()
-restoreFileInto cd fi =
-    restoreFile fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
+restoreFileInto cd = restoreFile . prependDirectory cd
+
+-- | Restore all files into a folder. Absolute file paths will be turned into relative to the
+-- supplied folder. Yields a list with exceptions instead of throwing them.
+restoreFileIntoLenient :: MonadResource m =>
+    FilePath -> FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFileIntoLenient cd = restoreFileWithErrors True . prependDirectory cd
 
 
--- | Same as `extractTarball`, but ignores unsupported file types.
+-- | Same as `extractTarball`, but ignores possible extraction errors. It can still throw a
+-- `TarException` if the tarball is corrupt or malformed.
 --
 -- @since 0.2.4
 extractTarballLenient :: FilePath -- ^ Filename for the tarball
                    -> Maybe FilePath -- ^ Folder where tarball should be extract
                    -- to. Default is the current path
-                   -> IO ()
+                   -> IO [(FileInfo, [SomeException])]
 extractTarballLenient tarfp mcd = do
     cd <- maybe getCurrentDirectory return mcd
     createDirectoryIfMissing True cd
-    let myRestoreFileInto fi =
-            case fileType fi of
-                FTNormal -> restoreFileInto cd fi
-                FTSymbolicLink _ -> restoreFileInto cd fi
-                FTDirectory -> restoreFileInto cd fi
-                _ -> sinkNull
-    runConduitRes $ sourceFileBS tarfp .| untarWithFinalizers myRestoreFileInto
+    runConduitRes $
+        sourceFileBS tarfp .| untarWithExceptions (restoreFileIntoLenient cd)
+
+
+
+-- | Restore files onto the file system. Produces actions that will set the modification time on the
+-- directories, which can be executed after the pipeline has finished and all files have been
+-- written to disk.
+restoreFile :: (MonadResource m) =>
+               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
+restoreFile fi = restoreFileWithErrors False fi .| mapC void
+
+
+-- | Restore files onto the file system, much in the same way `restoreFile` does it, except with
+-- ability to ignore restoring problematic files and report errors that occured as a list of
+-- exceptions, which will be returned as a list when finilizer executed. If a list is empty, it
+-- means, that no errors occured and a file only had a finilizer associated with it.
+restoreFileWithErrors ::
+       (MonadResource m)
+    => Bool
+    -> FileInfo
+    -> ConduitM S8.ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFileWithErrors = restoreFileInternal

@@ -4,14 +4,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Data.Conduit.Tar.Unix
     ( getFileInfo
-    , restoreFile
+    , restoreFileInternal
     ) where
 
-import           Conduit
+import           Conduit                       hiding (throwM)
 import           Control.Exception.Safe
-import           Control.Monad                 (void, when)
+import           Control.Monad                 (void, when, unless)
 import           Data.Bits
 import qualified Data.ByteString.Char8         as S8
+import           Data.Either
 import           Data.Conduit.Tar.Types
 import           Foreign.C.Types               (CTime (..))
 import qualified System.Directory              as Dir
@@ -53,41 +54,52 @@ getFileInfo fpStr = do
         , fileModTime   = Posix.modificationTime fs
         }
 
-
--- | Restore files onto the file system. Produces actions that will set the modification time on the
--- directories, which can be executed after the pipeline has finished and all files have been
--- written to disk.
-restoreFile :: (MonadResource m) =>
-               FileInfo -> ConduitM S8.ByteString (IO ()) m ()
-restoreFile FileInfo {..} = do
+-- | See 'Data.Conduit.Tar.restoreFileWithErrors' for documentation
+restoreFileInternal ::
+       (MonadResource m)
+    => Bool
+    -> FileInfo
+    -> ConduitM S8.ByteString (IO (FileInfo, [SomeException])) m ()
+restoreFileInternal lenient fi@FileInfo {..} = do
     let fpStr = decodeFilePath filePath
+        tryAnyCond action = if lenient then tryAny action else fmap Right action
         restorePermissions = do
-            void $ tryAny $ Posix.setOwnerAndGroup fpStr fileUserId fileGroupId
-            void $ tryAny $ Posix.setFileMode fpStr fileMode
+            eExc1 <- tryAnyCond $ Posix.setOwnerAndGroup fpStr fileUserId fileGroupId
+            eExc2 <- tryAnyCond $ Posix.setFileMode fpStr fileMode
+            return $! fst $ partitionEithers [eExc1, eExc2]
+        -- | Catch all exceptions, but only if lenient is set to True
     case fileType of
         FTDirectory -> do
-            liftIO $ do
+            excs <- liftIO $ do
                 Dir.createDirectoryIfMissing False fpStr
                 restorePermissions
-            yield $
-                (Dir.doesDirectoryExist fpStr >>=
-                 (`when` Posix.setFileTimes fpStr fileModTime fileModTime))
-        FTSymbolicLink link ->
-            liftIO $ do
+            yield $ do
+                eExc <- tryAnyCond (Dir.doesDirectoryExist fpStr >>=
+                                    (`when` Posix.setFileTimes fpStr fileModTime fileModTime))
+                return (fi, either ((excs ++) . pure) (const excs) eExc)
+        FTSymbolicLink link -> do
+            excs <- liftIO $ do
                 -- Try to unlink any existing file/symlink
-                _ <- tryAny $ Posix.removeLink fpStr
+                void $ tryAny $ Posix.removeLink fpStr
                 Posix.createSymbolicLink (decodeFilePath link) fpStr
-                _ <- tryAny $ Posix.setSymbolicLinkOwnerAndGroup fpStr fileUserId fileGroupId
-                -- Try best effort in setting symbolic link modification time.
+                eExc1 <- tryAnyCond $ Posix.setSymbolicLinkOwnerAndGroup fpStr fileUserId fileGroupId
 #if MIN_VERSION_unix(2,7,0)
+                -- Try best effort in setting symbolic link modification time.
                 let CTime epochInt32 = fileModTime
                     unixModTime = fromInteger (fromIntegral epochInt32)
-                void $ tryAny $ Posix.setSymbolicLinkTimesHiRes fpStr unixModTime unixModTime
+                eExc2 <- tryAny $ Posix.setSymbolicLinkTimesHiRes fpStr unixModTime unixModTime
 #endif
+                return $ fst $ partitionEithers [eExc1, eExc2]
+            unless (null excs) $ yield (return (fi, excs))
         FTNormal -> do
             sinkFile fpStr
-            liftIO $ do
-                restorePermissions
-                Posix.setFileTimes fpStr fileModTime fileModTime
-        ty -> error $ "Unsupported tar entry type: " ++ show ty
+            excs <- liftIO $ do
+                excs <- restorePermissions
+                eExc <- tryAnyCond $ Posix.setFileTimes fpStr fileModTime fileModTime
+                return (either ((excs ++) . pure) (const excs) eExc)
+            unless (null excs) $ yield (return (fi, excs))
+        ty -> do
+            let exc = UnsupportedType ty
+            unless lenient $ liftIO $ throwM exc
+            yield $ return (fi, [toException exc])
 

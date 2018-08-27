@@ -136,6 +136,7 @@ data TarException
     | InvalidHeader     !FileOffset
     | BadChecksum       !FileOffset
     | FileTypeError     !FileOffset !Char !String
+    | UnsupportedType   !FileType
     deriving (Show, Typeable)
 instance Exception TarException
 
