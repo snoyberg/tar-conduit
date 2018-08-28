@@ -13,8 +13,10 @@ module Data.Conduit.Tar
     , tarEntries
     , untar
     , untarWithFinalizers
+    , untarWithExceptions
     , restoreFile
     , restoreFileInto
+    , restoreFileIntoLenient
     , restoreFileWithErrors
     -- ** Operate on Chunks
     , untarChunks
@@ -405,7 +407,7 @@ untarWithFinalizers inner = do
 -- | Same as `untarWithFinalizers`, but will also produce a list of any exceptions that might have
 -- occured during restoration process.
 --
--- @since 0.2.4
+-- @since 0.2.5
 untarWithExceptions ::
        (MonadThrow m, MonadIO m)
     => (FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ())
@@ -894,6 +896,8 @@ restoreFileInto cd = restoreFile . prependDirectory cd
 
 -- | Restore all files into a folder. Absolute file paths will be turned into relative to the
 -- supplied folder. Yields a list with exceptions instead of throwing them.
+--
+-- @since 0.2.5
 restoreFileIntoLenient :: MonadResource m =>
     FilePath -> FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ()
 restoreFileIntoLenient cd = restoreFileWithErrors True . prependDirectory cd
@@ -902,7 +906,7 @@ restoreFileIntoLenient cd = restoreFileWithErrors True . prependDirectory cd
 -- | Same as `extractTarball`, but ignores possible extraction errors. It can still throw a
 -- `TarException` if the tarball is corrupt or malformed.
 --
--- @since 0.2.4
+-- @since 0.2.5
 extractTarballLenient :: FilePath -- ^ Filename for the tarball
                    -> Maybe FilePath -- ^ Folder where tarball should be extract
                    -- to. Default is the current path
@@ -927,6 +931,8 @@ restoreFile fi = restoreFileWithErrors False fi .| mapC void
 -- ability to ignore restoring problematic files and report errors that occured as a list of
 -- exceptions, which will be returned as a list when finilizer executed. If a list is empty, it
 -- means, that no errors occured and a file only had a finilizer associated with it.
+--
+-- @since 0.2.5
 restoreFileWithErrors ::
        (MonadResource m)
     => Bool
