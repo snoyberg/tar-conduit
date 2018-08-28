@@ -304,7 +304,7 @@ withEntries = peekForever . withEntry
 --
 -- * Old v7 tar format.
 -- * ustar: POSIX 1003.1-1988 format
--- * and only portions of GNU format:
+-- * and only some portions of GNU format:
 --   * Larger values for `fileUserId`, `fileGroupId`, `fileSize` and `fileModTime`.
 --   * 'L' type - long file names, but only up to 4096 chars to prevent DoS attack
 --   * other types are simply discarded
@@ -932,10 +932,10 @@ restoreFile fi = restoreFileWithErrors False fi .| mapC void
 -- exceptions, which will be returned as a list when finilizer executed. If a list is empty, it
 -- means, that no errors occured and a file only had a finilizer associated with it.
 --
--- @since 0.2.5
+-- @since 0.2.4
 restoreFileWithErrors ::
        (MonadResource m)
-    => Bool
+    => Bool -- ^ Lenient flag, results in exceptions thrown instead of collected when set to @False@.
     -> FileInfo
     -> ConduitM S8.ByteString (IO (FileInfo, [SomeException])) m ()
 restoreFileWithErrors = restoreFileInternal

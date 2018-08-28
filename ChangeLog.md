@@ -1,6 +1,9 @@
-## 0.2.4 - 2018-08-28
+## 0.2.5 - 2018-08-28
+ * Exported `untarWithExceptions`, `restoreFileIntoLenient`
+
+## 0.2.4 - 2018-08-27
  * Use forward slashes on Windows too, see [issue #21](https://github.com/snoyberg/tar-conduit/issues/21)
- * Addition of `extractTarballLenient`
+ * Addition of `extractTarballLenient` and `restoreFileWithErrors`
 
 ## 0.2.3.1 - 2018-06-06
  * Fixed drops associated payload for unsupported headers ((https://github.com/snoyberg/tar-conduit/issues/17)) ([PR 18](https://github.com/snoyberg/tar-conduit/pull/18))
