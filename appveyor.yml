@@ -8,6 +8,9 @@ before_test:
 - 7z x stack.zip stack.exe
 
 clone_folder: "c:\\stack"
+cache:
+  "c:\\sr"
+  "c:\\stack\\.stack-work"
 environment:
   global:
     STACK_ROOT: "c:\\sr"
