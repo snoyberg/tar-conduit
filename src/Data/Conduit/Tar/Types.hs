@@ -1,4 +1,7 @@
 {-# LANGUAGE CPP #-}
+#if WINDOWS
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+#endif
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
     ( Header(..)
