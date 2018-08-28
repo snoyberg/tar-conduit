@@ -87,9 +87,9 @@ data FileInfo = FileInfo
     , fileGroupName :: !ByteString  -- ^ Unix group name.
     , fileMode      :: !FileMode -- ^ Unix file permissions
     , fileSize      :: !FileOffset -- ^ File size
-    , fileType      :: !FileType  -- ^ File type. `FTNormal`, `FTSymbolicLink`
-                                  -- and `FTDirectory` are the only ones
-                                  -- supported for now
+    , fileType      :: !FileType  -- ^ File type. `FTNormal`, `FTHardLink` (@since 0.3.0),
+                                  -- `FTSymbolicLink` and `FTDirectory` are the only ones supported
+                                  -- for now
     , fileModTime   :: !EpochTime -- ^ File modification timestamp
     } deriving (Show, Eq)
 

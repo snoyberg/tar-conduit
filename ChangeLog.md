@@ -1,3 +1,8 @@
+## 0.3.0 - 2018-08-28
+ * Support for `FTHardLink` restoration, but not creation yet.
+ * Restoring files made even more lenient with creation of full directory path if any parents of
+   it are missing.
+
 ## 0.2.5 - 2018-08-28
  * Exported `untarWithExceptions`, `restoreFileIntoLenient`
 

@@ -1,6 +1,7 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -257,7 +258,9 @@ payloadsConduit = do
 {-| This function handles each entry of the tar archive according to the
 behaviour of the function passed as first argument.
 
-Here is a full example function, that reads a compressed tar archive and for each entry that is a simple file, it prints its file path and SHA256 digest. Note that this function can throw exceptions!
+Here is a full example function, that reads a compressed tar archive and for each entry that is a
+simple file, it prints its file path and SHA256 digest. Note that this function can throw
+exceptions!
 
 > import qualified Crypto.Hash.Conduit as CH
 > import qualified Data.Conduit.Tar    as CT
@@ -284,13 +287,14 @@ Here is a full example function, that reads a compressed tar archive and for eac
 The @hashentry@ function handles a single entry, based on its first 'Header' argument.
 In this example, a 'Consumer' is used to process the whole entry.
 
-Note that the benefits of stream processing are easily lost when working with a 'Consumer'. For example, the following implementation would have used an unbounded amount of memory:
+Note that the benefits of stream processing are easily lost when working with a 'Consumer'. For
+example, the following implementation would have used an unbounded amount of memory:
 
 >         hashentry hdr = when (CT.headerFileType hdr == CT.FTNormal) $ do
 >             content <- mconcat <$> sinkList
 >             yield (CT.headerFilePath hdr, hash content)
 
--- @since 0.1.0
+@since 0.1.0
 -}
 withEntries :: MonadThrow m
             => (Header -> ConduitM ByteString o m ())
@@ -316,20 +320,19 @@ withEntries = peekForever . withEntry
 withFileInfo :: MonadThrow m
              => (FileInfo -> ConduitM ByteString o m ())
              -> ConduitM TarChunk o m ()
-withFileInfo inner =
-    start
+withFileInfo inner = start
   where
     start = await >>= maybe (return ()) go
-
-    go x = do
+    go x =
         case x of
             ChunkHeader h
-                | headerLinkIndicator h >= 55 -> do
-                    if (headerMagicVersion h == gnuTarMagicVersion)
+                | headerLinkIndicator h >= 55 ->
+                    if headerMagicVersion h == gnuTarMagicVersion
                         then handleGnuTarHeader h >>= maybe start go
-                        else dropWhileC (\x' -> case x' of
-                                           ChunkPayload _ _ -> True
-                                           _                -> False) >> start
+                        else dropWhileC
+                                 (\case
+                                      ChunkPayload _ _ -> True
+                                      _                -> False) >> start
             ChunkHeader h -> do
                 payloadsConduit .| (inner (fileInfoFromHeader h) <* sinkNull)
                 start
@@ -337,13 +340,13 @@ withFileInfo inner =
                 leftover x
                 throwM $ UnexpectedPayload offset
             ChunkException e -> throwM e
-      
+
 
 -- | Take care of custom GNU tar format.
 handleGnuTarHeader :: MonadThrow m
                    => Header
                    -> ConduitM TarChunk o m (Maybe TarChunk)
-handleGnuTarHeader h = do
+handleGnuTarHeader h =
     case headerLinkIndicator h of
         76 -> do
             let pSize = headerPayloadSize h
@@ -359,7 +362,7 @@ handleGnuTarHeader h = do
                 Just (ChunkHeader nh) -> do
                     unless (S.isPrefixOf (fromShort (headerFileNameSuffix nh)) longFileName) $
                         throwM $
-                        FileTypeError (headerPayloadOffset nh) 'L' $
+                        FileTypeError (headerPayloadOffset nh) 'L'
                         "Long filename doesn't match the original."
                     return
                         (Just $ ChunkHeader $
@@ -454,11 +457,11 @@ defHeader offset = Header
           }
 
 
-headerFromFileInfo :: MonadThrow m =>
-                      FileOffset -- ^ Starting offset within the tarball. Must
-                      -- be multiple of 512, otherwise error.
-                   -> FileInfo -- ^ File info.
-                   -> m (Either TarCreateException Header)
+headerFromFileInfo ::
+       MonadThrow m
+    => FileOffset -- ^ Starting offset within the tarball. Must be multiple of 512, otherwise error.
+    -> FileInfo -- ^ File info.
+    -> m (Either TarCreateException Header)
 headerFromFileInfo offset fi = do
     unless (offset `mod` 512 == 0) $
         throwM $
@@ -466,7 +469,7 @@ headerFromFileInfo offset fi = do
         "<headerFromFileInfo>: Offset must always be a multiple of 512 for file: " ++
         getFileInfoPath fi
     let (prefix, suffix) = splitPathAt 100 $ filePath fi
-    if (SS.length prefix > 155 || SS.null suffix)
+    if SS.length prefix > 155 || SS.null suffix
         then return $ Left $ FileNameTooLong fi
         else do
             (payloadSize, linkName, linkIndicator) <-
@@ -576,7 +579,7 @@ packHeaderNoChecksum h@Header {..} = do
     encodeDevice magic _ 0     = return (magic, byteString $ S.replicate 8 0)
     encodeDevice magic m devid = encodeNumber magic ("device" ++ m) 8 devid
     fallbackHex magic (Right enc)       = Right (magic, enc)
-    fallbackHex _     (Left (len, val)) = fmap ((,) gnuTarMagicVersion) $ encodeHex len val
+    fallbackHex _     (Left (len, val)) = (,) gnuTarMagicVersion <$> encodeHex len val
     throwNumberEither _     (Right v)         = return v
     throwNumberEither field (Left (len, val)) =
         throwM $
@@ -835,7 +838,7 @@ tarFilePath = filePathConduit .| tar
 createTarball :: FilePath -- ^ File name for the tarball
               -> [FilePath] -- ^ List of files and directories to include in the tarball
               -> IO ()
-createTarball tarfp dirs = do
+createTarball tarfp dirs =
     runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkFile tarfp
 
 -- | Take a list of files and paths, recursively tar them and write output into supplied handle.
@@ -844,7 +847,7 @@ createTarball tarfp dirs = do
 writeTarball :: Handle -- ^ Handle where created tarball will be written to
              -> [FilePath] -- ^ List of files and directories to include in the tarball
              -> IO ()
-writeTarball tarHandle dirs = do
+writeTarball tarHandle dirs =
     runConduitRes $ yieldMany dirs .| void tarFilePath .| sinkHandle tarHandle
 
 
@@ -855,7 +858,7 @@ pathSeparatorS = "/" -- S8.singleton pathSeparator
 
 
 fileInfoFromHeader :: Header -> FileInfo
-fileInfoFromHeader header@(Header {..}) =
+fileInfoFromHeader header@Header {..} =
     FileInfo
     { filePath = headerFilePathBS header
     , fileUserId = headerOwnerId
