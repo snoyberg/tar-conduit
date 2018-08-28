@@ -9,8 +9,8 @@ before_test:
 
 clone_folder: "c:\\stack"
 cache:
-  "c:\\sr"
-  "c:\\stack\\.stack-work"
+- "c:\\sr"
+- "c:\\stack\\.stack-work"
 environment:
   global:
     STACK_ROOT: "c:\\sr"
