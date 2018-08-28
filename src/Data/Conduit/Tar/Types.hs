@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE CPP #-}
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
@@ -25,7 +23,6 @@ module Data.Conduit.Tar.Types
 import           Control.Exception        (Exception)
 import           Data.ByteString          (ByteString)
 import           Data.ByteString.Short    (ShortByteString)
-import           Data.Typeable
 import           Data.Word
 import           System.Posix.Types
 import qualified Data.ByteString.Char8         as S8
@@ -137,14 +134,14 @@ data TarException
     | BadChecksum       !FileOffset
     | FileTypeError     !FileOffset !Char !String
     | UnsupportedType   !FileType
-    deriving (Show, Typeable)
+    deriving Show
 instance Exception TarException
 
 
 data TarCreateException
     = FileNameTooLong   !FileInfo
     | TarCreationError  !String
-    deriving (Show, Typeable)
+    deriving Show
 instance Exception TarCreateException
 
 -- | Convert `FilePath` into a UTF-8 encoded `ByteString`
