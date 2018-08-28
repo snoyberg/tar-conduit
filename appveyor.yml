@@ -11,6 +11,7 @@ clone_folder: "c:\\stack"
 cache:
 - "c:\\sr"
 - "c:\\stack\\.stack-work"
+- "%LOCALAPPDATA%\Programs\stack"
 environment:
   global:
     STACK_ROOT: "c:\\sr"
