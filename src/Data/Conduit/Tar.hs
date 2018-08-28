@@ -13,8 +13,10 @@ module Data.Conduit.Tar
     , tarEntries
     , untar
     , untarWithFinalizers
+    , untarWithExceptions
     , restoreFile
     , restoreFileInto
+    , restoreFileIntoLenient
     , restoreFileWithErrors
     -- ** Operate on Chunks
     , untarChunks
@@ -90,7 +92,7 @@ headerFileType h =
     case headerLinkIndicator h of
         0  -> FTNormal
         48 -> FTNormal
-        49 -> FTHardLink
+        49 -> FTHardLink (fromShort (headerLinkName h))
         50 -> FTSymbolicLink (fromShort (headerLinkName h))
         51 -> FTCharacterSpecial
         52 -> FTBlockSpecial
@@ -470,6 +472,7 @@ headerFromFileInfo offset fi = do
             (payloadSize, linkName, linkIndicator) <-
                 case fileType fi of
                     FTNormal -> return (fileSize fi, SS.empty, 48)
+                    FTHardLink ln -> return (0, toShort ln, 49)
                     FTSymbolicLink ln -> return (0, toShort ln, 50)
                     FTDirectory -> return (0, SS.empty, 53)
                     fty ->
@@ -882,8 +885,15 @@ extractTarball tarfp mcd = do
 
 
 prependDirectory :: FilePath -> FileInfo -> FileInfo
-prependDirectory cd fi =
-    fi {filePath = encodeFilePath (cd </> makeRelative "/" (getFileInfoPath fi))}
+prependDirectory cd fi = fi {filePath = prependDir $ getFileInfoPath fi,
+                             fileType = prependDirIfNeeded (fileType fi)}
+  where
+    -- Hard links need to be interpreted based on `cd`, not just CWD, if relative,
+    -- otherwise they may point to some invalid location.
+    prependDirIfNeeded (FTHardLink p)
+        | isRelative $ decodeFilePath p = FTHardLink (prependDir $ decodeFilePath p)
+    prependDirIfNeeded other            = other
+    prependDir p                        = encodeFilePath (cd </> makeRelative "/" p)
 
 
 -- | Restore all files into a folder. Absolute file paths will be turned into
@@ -897,7 +907,6 @@ restoreFileInto cd = restoreFile . prependDirectory cd
 restoreFileIntoLenient :: MonadResource m =>
     FilePath -> FileInfo -> ConduitM ByteString (IO (FileInfo, [SomeException])) m ()
 restoreFileIntoLenient cd = restoreFileWithErrors True . prependDirectory cd
-
 
 -- | Same as `extractTarball`, but ignores possible extraction errors. It can still throw a
 -- `TarException` if the tarball is corrupt or malformed.

@@ -60,7 +60,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
     case fileType of
         FTDirectory -> do
             excs <- liftIO $ do
-                Dir.createDirectoryIfMissing False fpStr
+                Dir.createDirectoryIfMissing True fpStr
                 restoreTimeAndMode
             yield $ do
                 eExc <- tryAnyCond (Dir.doesDirectoryExist fpStr >>=

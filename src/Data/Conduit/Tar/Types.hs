@@ -69,7 +69,7 @@ type GroupID = CGid
 
 data FileType
     = FTNormal
-    | FTHardLink
+    | FTHardLink !ByteString
     | FTSymbolicLink !ByteString
     | FTCharacterSpecial
     | FTBlockSpecial
