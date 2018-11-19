@@ -1,3 +1,6 @@
+## 0.3.1 - 2018-11-19
+ * Fixed modification time restoration on Windows for read-only files [#25](https://github.com/snoyberg/tar-conduit/pull/25).
+
 ## 0.3.0 - 2018-08-28
  * Support for `FTHardLink` restoration, but not creation yet.
  * Restoring files made even more lenient with creation of full directory path if any parents of
