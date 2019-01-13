@@ -111,6 +111,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
                     return (either ((excs ++) . pure) (const excs) eExc)
             unless (null excs) $ yield (return (fi, excs))
         FTNormal -> do
+            liftIO $ Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
             sinkFile fpStr
             excs <- liftIO $ do
                 excs <- restorePermissions

@@ -16,6 +16,7 @@ import           Data.Time.Clock.POSIX
 import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
+import qualified System.FilePath as FilePath
 
 
 getFileInfo :: FilePath -> IO FileInfo
@@ -67,6 +68,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
                                     (`when` Dir.setModificationTime fpStr modTime))
                 return (fi, either ((excs ++) . pure) (const excs) eExc)
         FTNormal -> do
+            liftIO $ Dir.createDirectoryIfMissing True $ FilePath.takeDirectory fpStr
             sinkFile fpStr
             excs <- liftIO $ restoreTimeAndMode
             unless (null excs) $ yield $ return (fi, excs)
