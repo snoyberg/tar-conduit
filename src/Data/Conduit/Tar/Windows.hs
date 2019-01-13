@@ -68,7 +68,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
                                     (`when` Dir.setModificationTime fpStr modTime))
                 return (fi, either ((excs ++) . pure) (const excs) eExc)
         FTNormal -> do
-            liftIO $ Dir.createDirectoryIfMissing True $ FilePath.takeDirectory fpStr
+            when lenient $ liftIO $ Dir.createDirectoryIfMissing True $ FilePath.takeDirectory fpStr
             sinkFile fpStr
             excs <- liftIO $ restoreTimeAndMode
             unless (null excs) $ yield $ return (fi, excs)

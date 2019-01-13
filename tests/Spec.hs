@@ -69,7 +69,7 @@ main = do
             around (withTempTarFiles baseTmp) $
                 it "create-intermediate" $ \(fpIn, hIn, outDir, fpOut) -> do
                     hClose hIn
-                    extractTarball "tests/files/subdir.tar" (Just outDir)
+                    extractTarballLenient "tests/files/subdir.tar" (Just outDir)
                     curDir <- getCurrentDirectory
                     collectContent (outDir Posix.</> "dir/subdir/") `shouldReturn` "Hello World\n"
         describe "ustar" ustarSpec
