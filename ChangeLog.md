@@ -1,3 +1,6 @@
+## 0.3.2 - 2019-01-14
+* Create a prefix directory whenever a directory type entry is missing from the tarball itself. Fixes [#26](https://github.com/snoyberg/tar-conduit/issues/26).
+
 ## 0.3.1 - 2018-11-19
  * Fixed modification time restoration on Windows for read-only files [#25](https://github.com/snoyberg/tar-conduit/pull/25).
 

@@ -1,5 +1,5 @@
 name:                tar-conduit
-version:             0.3.1
+version:             0.3.2
 synopsis:            Extract and create tar files using conduit for streaming
 description:         Please see README.md. This is just filler to avoid warnings.
 homepage:            https://github.com/snoyberg/tar-conduit#readme
@@ -9,7 +9,7 @@ author:              Michael Snoyman
 maintainer:          michael@snoyman.com, bartavelle@gmail.com, alexey@kuleshevi.ch
 category:            Data Conduit
 build-type:          Simple
-extra-source-files:  README.md ChangeLog.md tests/files/libpq-0.3.tar.gz
+extra-source-files:  README.md ChangeLog.md tests/files/libpq-0.3.tar.gz tests/files/subdir.tar
 cabal-version:       >= 1.24.0.0
 
 library
