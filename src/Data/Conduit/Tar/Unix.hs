@@ -81,6 +81,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
             excs <- liftIO $ do
                 -- Try to unlink any existing file/symlink
                 void $ tryAny $ Posix.removeLink fpStr
+                when lenient $ Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
                 Posix.createSymbolicLink (decodeFilePath link) fpStr
                 eExc1 <- tryAnyCond $ Posix.setSymbolicLinkOwnerAndGroup fpStr fileUserId fileGroupId
 #if MIN_VERSION_unix(2,7,0)
@@ -111,6 +112,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
                     return (either ((excs ++) . pure) (const excs) eExc)
             unless (null excs) $ yield (return (fi, excs))
         FTNormal -> do
+            when lenient $ liftIO $ Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
             sinkFile fpStr
             excs <- liftIO $ do
                 excs <- restorePermissions

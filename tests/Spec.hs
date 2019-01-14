@@ -65,6 +65,13 @@ main = do
                     P.length tb1 `shouldBe` P.length tb2
                     zipWithM_ shouldBe (fmap fst tb2) (fmap fst tb1)
                     zipWithM_ shouldBe (fmap snd tb2) (fmap snd tb1)
+        describe "untar" $ do
+            around (withTempTarFiles baseTmp) $
+                it "create-intermediate" $ \(fpIn, hIn, outDir, fpOut) -> do
+                    hClose hIn
+                    extractTarballLenient "tests/files/subdir.tar" (Just outDir)
+                    curDir <- getCurrentDirectory
+                    collectContent (outDir Posix.</> "dir/subdir/") `shouldReturn` "Hello World\n"
         describe "ustar" ustarSpec
         describe "GNUtar" gnutarSpec
         describe "unsupported headers" $ do
