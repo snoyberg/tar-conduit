@@ -40,7 +40,7 @@ main = do
     let testPaths =
             ["src", "./tests", "README.md", "ChangeLog.md", "LICENSE"] ++
             if isStack
-                then [".stack-work", "./sample"]
+                then [".stack-work"]
                 else []
     hspec $ do
         describe "tar/untar" $ do
