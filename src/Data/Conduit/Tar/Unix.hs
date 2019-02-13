@@ -20,8 +20,11 @@ import qualified System.Posix.Files            as Posix
 import qualified System.Posix.User             as Posix
 import qualified System.FilePath.Posix         as Posix
 
-getFileInfo :: FilePath -> IO FileInfo
-getFileInfo fpStr = do
+-- | Construct `FileInfo` from an actual file on the file system.
+--
+-- @since 0.3.3
+getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
+getFileInfo fpStr = liftIO $ do
     let fp = encodeFilePath fpStr
     fs <- Posix.getSymbolicLinkStatus fpStr
     let uid = Posix.fileOwner fs
@@ -41,7 +44,8 @@ getFileInfo fpStr = do
                | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
                | Posix.isDirectory fs       -> return (FTDirectory, 0)
                | Posix.isNamedPipe fs       -> return (FTFifo, 0)
-               | otherwise                  -> error $ "Unsupported file type: " ++ S8.unpack fp
+               | otherwise                  ->
+                 throwM $ TarCreationError $ "Unsupported file type: " ++ S8.unpack fp
     return $! FileInfo
         { filePath      = fp
         , fileUserId    = uid

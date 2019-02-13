@@ -27,6 +27,7 @@ module Data.Conduit.Tar
       -- * Helper functions
     , headerFileType
     , headerFilePath
+    , getFileInfo
       -- ** Creation
     , tarFilePath
     , filePathConduit
@@ -801,7 +802,7 @@ filePathConduit = do
     mfp <- await
     case mfp of
         Just fp -> do
-            fi <- liftIO $ getFileInfo fp
+            fi <- getFileInfo fp
             case fileType fi of
                 FTNormal -> do
                     yield (Left fi)

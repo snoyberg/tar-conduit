@@ -19,8 +19,11 @@ import qualified System.PosixCompat.Files as Posix
 import qualified System.FilePath as FilePath
 
 
-getFileInfo :: FilePath -> IO FileInfo
-getFileInfo fp = do
+-- | Construct `FileInfo` from an actual file on the file system.
+--
+-- @since 0.3.3
+getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
+getFileInfo fp = liftIO $ do
     fs <- Posix.getSymbolicLinkStatus fp
     let uid = fromIntegral $ Posix.fileOwner fs
         gid = fromIntegral $ Posix.fileGroup fs
@@ -28,7 +31,8 @@ getFileInfo fp = do
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
                | Posix.isDirectory fs       -> return (FTDirectory, 0)
-               | otherwise                  -> error $ "Unsupported file type: " ++ fp
+               | otherwise                  ->
+                 throwM $ TarCreationError $ "Unsupported file type: " ++ fp
     return FileInfo
         { filePath      = encodeFilePath fp
         , fileUserId    = uid
