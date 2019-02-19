@@ -26,6 +26,7 @@ import qualified System.FilePath.Posix         as Posix
 getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
 getFileInfo fpStr = liftIO $ do
     let fp = encodeFilePath fpStr
+        fpDir = encodeFilePath $ Posix.addTrailingPathSeparator fpStr
     fs <- Posix.getSymbolicLinkStatus fpStr
     let uid = Posix.fileOwner fs
         gid = Posix.fileGroup fs
@@ -34,20 +35,20 @@ getFileInfo fpStr = liftIO $ do
     -- Moreover, names are non-critical as they are not used during unarchival process
     euEntry :: Either IOException Posix.UserEntry <- try $ Posix.getUserEntryForID uid
     egEntry :: Either IOException Posix.GroupEntry <- try $ Posix.getGroupEntryForID gid
-    (fType, fSize) <-
+    (fType, fp', fSize) <-
         case () of
-            () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
+            () | Posix.isRegularFile fs     -> return (FTNormal, fp, Posix.fileSize fs)
                | Posix.isSymbolicLink fs    -> do
                      ln <- Posix.readSymbolicLink fpStr
-                     return (FTSymbolicLink (encodeFilePath ln), 0)
-               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, 0)
-               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
-               | Posix.isDirectory fs       -> return (FTDirectory, 0)
-               | Posix.isNamedPipe fs       -> return (FTFifo, 0)
+                     return (FTSymbolicLink (encodeFilePath ln), fp, 0)
+               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, fp, 0)
+               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, fp, 0)
+               | Posix.isDirectory fs       -> return (FTDirectory, fpDir, 0)
+               | Posix.isNamedPipe fs       -> return (FTFifo, fp, 0)
                | otherwise                  ->
                  throwM $ TarCreationError $ "Unsupported file type: " ++ S8.unpack fp
     return $! FileInfo
-        { filePath      = fp
+        { filePath      = fp'
         , fileUserId    = uid
         , fileUserName  = either (const "") (S8.pack . Posix.userName) euEntry
         , fileGroupId   = gid

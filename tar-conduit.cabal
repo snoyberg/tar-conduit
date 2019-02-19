@@ -24,16 +24,17 @@ library
                      , bytestring
                      , conduit
                      , conduit-combinators >= 1.0.8.1
+                     , containers
                      , directory
                      , filepath
                      , safe-exceptions
                      , text
+                     , time
   default-language:    Haskell2010
   ghc-options:         -Wall
   if os(windows)
       other-modules: Data.Conduit.Tar.Windows
-      build-depends: time
-                   , unix-compat
+      build-depends: unix-compat
       cpp-options:   -DWINDOWS
   else
       other-modules: Data.Conduit.Tar.Unix

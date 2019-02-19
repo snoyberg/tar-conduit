@@ -16,25 +16,28 @@ import           Data.Time.Clock.POSIX
 import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
-import qualified System.FilePath as FilePath
+import qualified System.FilePath          as FilePath
+import qualified System.FilePath.Posix    as PosixFilePath
 
 
 -- | Construct `FileInfo` from an actual file on the file system.
 --
 -- @since 0.3.3
 getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
-getFileInfo fp = liftIO $ do
-    fs <- Posix.getSymbolicLinkStatus fp
+getFileInfo fpStr = liftIO $ do
+    fs <- Posix.getSymbolicLinkStatus fpStr
     let uid = fromIntegral $ Posix.fileOwner fs
         gid = fromIntegral $ Posix.fileGroup fs
-    (fType, fSize) <-
+        fp = encodeFilePath fpStr
+        fpDir = encodeFilePath $ PosixFilePath.addTrailingPathSeparator fpStr
+    (fType, fp', fSize) <-
         case () of
-            () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
-               | Posix.isDirectory fs       -> return (FTDirectory, 0)
+            () | Posix.isRegularFile fs     -> return (FTNormal, fp, Posix.fileSize fs)
+               | Posix.isDirectory fs       -> return (FTDirectory, fpDir, 0)
                | otherwise                  ->
-                 throwM $ TarCreationError $ "Unsupported file type: " ++ fp
+                 throwM $ TarCreationError $ "Unsupported file type: " ++ fpStr
     return FileInfo
-        { filePath      = encodeFilePath fp
+        { filePath      = fp'
         , fileUserId    = uid
         , fileUserName  = ""
         , fileGroupId   = gid

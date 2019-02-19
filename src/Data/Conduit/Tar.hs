@@ -1,6 +1,6 @@
-{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
@@ -28,7 +28,9 @@ module Data.Conduit.Tar
     , headerFileType
     , headerFilePath
     , getFileInfo
+    , makeDirectory
       -- ** Creation
+    , tarFiles
     , tarFilePath
     , filePathConduit
       -- * Directly on files
@@ -41,8 +43,8 @@ module Data.Conduit.Tar
     ) where
 
 import           Conduit                  as C
-import           Control.Exception        (assert, SomeException)
-import           Control.Monad            (unless, void)
+import           Control.Exception        (SomeException, assert)
+import           Control.Monad            (unless, void, when)
 import           Data.Bits
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as S
@@ -52,13 +54,17 @@ import qualified Data.ByteString.Lazy     as SL
 import           Data.ByteString.Short    (ShortByteString, fromShort, toShort)
 import qualified Data.ByteString.Short    as SS
 import qualified Data.ByteString.Unsafe   as BU
-import           Data.Foldable            (foldr')
-import           Data.Monoid              ((<>), mempty)
+import           Data.Foldable            (foldlM, foldr')
+import           Data.Int
+import           Data.Monoid              (mempty, (<>))
+import qualified Data.Set                 as Set
+import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import           Foreign.C.Types          (CTime (..))
 import           Foreign.Storable
 import           System.Directory         (createDirectoryIfMissing,
                                            getCurrentDirectory)
 import           System.FilePath
+import qualified System.FilePath.Posix    as Posix
 import           System.IO
 
 #if !MIN_VERSION_base(4,8,0)
@@ -790,6 +796,24 @@ tarEntries = do
     yield terminatorBlock
     return $ offset + fromIntegral (S.length terminatorBlock)
 
+-- | Construct a directory with modification time set to current time and the owner set to @root@.
+--
+-- @since 0.3.3
+makeDirectory :: MonadIO m => FilePath -> m FileInfo
+makeDirectory fp = do
+    curTime <- floor <$> liftIO getPOSIXTime
+    pure
+        FileInfo
+            { filePath = encodeFilePath fp
+            , fileUserId = 0
+            , fileUserName = ""
+            , fileGroupId = 0
+            , fileGroupName = ""
+            , fileMode = 0o755
+            , fileSize = 0
+            , fileModTime = fromIntegral (curTime :: Int64)
+            , fileType = FTDirectory
+            }
 
 
 -- | Turn a stream of file paths into a stream of `FileInfo` and file
@@ -819,6 +843,157 @@ filePathConduit = do
                         show fty ++ " for file: " ++ getFileInfoPath fi
             filePathConduit
         Nothing -> return ()
+
+
+-- | A smart tarball creator, that can accept files and folders alike, while trying its best to
+-- preserve proper tar structure by adding missing directory structures.
+--
+-- ==== __Examples__
+--
+-- If executed inside @"tar-conduit"@ package folder, this will produce a tar with all this files
+-- and folders:
+--
+-- >>> runConduitRes (yield "src/Data" .| tarFiles Nothing Nothing (Just "src") .| tar)
+--
+-- @
+-- Data\/
+-- Data\/Conduit\/
+-- Data\/Conduit\/Tar\/
+-- Data\/Conduit\/Tar\/Windows.hs
+-- Data\/Conduit\/Tar\/Types.hs
+-- Data\/Conduit\/Tar\/Unix.hs
+-- Data\/Conduit\/Tar.hs
+-- @
+--
+-- While this will add a prefix to all included files and folders:
+--
+-- >>> prefix <- makeDirectory "foo/bar"
+-- >>> runConduitRes (yield "src/Data/Conduit/Tar" .| tarFiles (Just prefix) Nothing (Just "src/Data/Conduit") .| tar)
+--
+-- @
+-- foo\/
+-- foo\/bar\/
+-- foo\/bar\/Tar\/
+-- foo\/bar\/Tar\/Windows.hs
+-- foo\/bar\/Tar\/Types.hs
+-- foo\/bar\/Tar\/Unix.hs
+-- @
+--
+-- There is also a way to control how deep should directories be traversed:
+--
+-- >>> runConduitRes (yield "src/Data" .| tarFiles Nothing (Just 3) (Just "src/Data") .| tar)
+--
+-- @
+-- Conduit\/
+-- Conduit\/Tar\/
+-- Conduit\/Tar.hs
+-- @
+--
+-- @since 0.3.3
+tarFiles ::
+       (MonadThrow m, MonadResource m)
+    => Maybe FileInfo -- ^ Base directory where all of the files will be placed in. If `Nothing`
+                      -- files will be placed in the root of the tarball. Must be of type
+                      -- `FTDirectory`, otherwise error.
+    -> Maybe Int -- ^ How deep to recurse into the supplied directories, with `Nothing` being as
+                 -- deep as possible.
+    -> Maybe FilePath -- ^ With respect to which directory to add files, i.e. this prefix path will
+                      -- be stripped from all added files. By default it will do no stripping (even
+                      -- absolute paths will be stored with leading slash: @/@).
+    -> ConduitM FilePath (Either FileInfo ByteString) m ()
+tarFiles mbaseDir mDepth mWithRelTo =
+    when (maybe True (> 0) mDepth) $ do
+        basePath <- maybe (pure "") yieldDirectory mbaseDir
+        let mPrefix =
+                fmap (encodeFilePath . Posix.normalise . Posix.addTrailingPathSeparator) mWithRelTo
+            withoutPrefix dirsCreated fi m =
+                case mPrefix of
+                    Nothing -> m fi
+                    Just "./" -> m fi
+                    Just prefix
+                        | Just relativePath <- S8.stripPrefix prefix (filePath fi) ->
+                            m fi {filePath = relativePath}
+                    _ -> pure dirsCreated
+            addBaseDir fi = fi {filePath = basePath <> filePath fi}
+            yieldFile dirsCreated fi fi' = do
+                dirsAdded <-
+                    if Set.member (Posix.takeDirectory (getFileInfoPath fi')) dirsCreated
+                        then pure Set.empty
+                        else yield (Posix.takeDirectory (getFileInfoPath fi)) .|
+                             go dirsCreated (Just (1 :: Int))
+                yield $ Left $ addBaseDir fi'
+                pure (Set.union dirsAdded dirsCreated)
+            yieldParentDirs dirsCreated fi fp = do
+                let getParentDir =
+                        Posix.addTrailingPathSeparator .
+                        Posix.takeDirectory . Posix.dropTrailingPathSeparator
+                    parentDir = getParentDir fp
+                if Set.member parentDir dirsCreated || parentDir == fp
+                    then pure mempty
+                    else yield (getParentDir (getFileInfoPath fi)) .|
+                         go dirsCreated (Just (1 :: Int))
+            yieldChildrenDirs mdep dirsCreated fi =
+                if maybe True (> 0) mdep
+                    then sourceDirectory (getFileInfoPath fi) .| go dirsCreated mdep
+                    else pure dirsCreated
+            yieldDir mdep dirsCreated fi fi' =
+                let fp' = getFileInfoPath fi'
+                 in if Set.member fp' dirsCreated
+                        then pure dirsCreated
+                        else do
+                            parents <- yieldParentDirs dirsCreated fi fp'
+                            unless (null fp') $ yield $ Left $ addBaseDir fi'
+                            let withParents = Set.unions [dirsCreated, parents, Set.singleton fp']
+                            yieldChildrenDirs (pred <$> mdep) withParents fi
+            go !dirsCreated !mdep = do
+                await >>= \case
+                    Just fp -> do
+                        fi <- getFileInfo fp
+                        dirsAdded <-
+                            case fileType fi of
+                                FTNormal ->
+                                    withoutPrefix dirsCreated fi $ \fi' -> do
+                                        dirsAdded <- yieldFile dirsCreated fi fi'
+                                        sourceFile (getFileInfoPath fi) .| mapC Right
+                                        pure dirsAdded
+                                FTSymbolicLink _ ->
+                                    withoutPrefix dirsCreated fi $ yieldFile dirsCreated fi
+                                FTDirectory ->
+                                    withoutPrefix dirsCreated fi $ yieldDir mdep dirsCreated fi
+                                fty -> do
+                                    leftover fp
+                                    throwM $
+                                        TarCreationError $
+                                        "<tarFiles>: Unsupported file type: " ++
+                                        show fty ++ " for file: " ++ getFileInfoPath fi
+                        go dirsAdded mdep
+                    Nothing -> pure dirsCreated
+        void $ go (Set.singleton "./") mDepth
+
+
+-- | Given a directory `FileInfo`, will yield all directory strucutre, eg. @"\/foo\/bar\/baz\/"@,
+-- will result in @["\/", "\/foo\/", "\/foo\/bar\/", "\/foo\/bar\/baz\/"]@
+yieldDirectory ::
+       MonadThrow m => FileInfo -> ConduitT i (Either FileInfo b) m ByteString
+yieldDirectory fileInfo =
+    case fileType fileInfo of
+        FTDirectory ->
+            case Posix.splitDirectories $ Posix.normalise fp of
+                [] -> throwM $ TarCreationError "<tarFiles>: Base directory name cannot be empty"
+                ("/":xs) -> do
+                    yield $ Left fileInfo {filePath = "/"}
+                    foldlM yieldDirs "/" $ map encodeFilePath xs
+                xs -> foldlM yieldDirs "" $ map encodeFilePath xs
+        ty ->
+            throwM $
+            TarCreationError $
+            "<tarFiles>: Expected FTDirectory. Unsupported type for directory: " <> show ty
+  where
+    fp = getFileInfoPath fileInfo
+    yieldDirs parent curDirName = do
+        let curPath = parent <> curDirName <> pathSeparatorS
+        yield $ Left fileInfo {filePath = curPath}
+        pure curPath
 
 
 -- | Recursively tar all of the files and directories. There will be no
