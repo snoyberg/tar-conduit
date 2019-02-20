@@ -2,6 +2,7 @@
 {-# LANGUAGE RecordWildCards   #-}
 module Data.Conduit.Tar.Windows
     ( getFileInfo
+    , unixifyDirectory
     , restoreFileInternal
     ) where
 
@@ -20,6 +21,19 @@ import qualified System.FilePath          as FilePath
 import qualified System.FilePath.Posix    as PosixFilePath
 
 
+-- | Convert a Windows style directory into a Unix-like, while dropping any drive information.
+--
+-- @since 0.3.3
+unixifyDirectory :: FilePath -> FilePath
+unixifyDirectory fp =
+    PosixFilePath.addTrailingPathSeparator $
+    case FilePath.splitDrive fp of
+        ("", dir) -> PosixFilePath.joinPath (FilePath.splitDirectories dir)
+        (_, dir) ->
+            PosixFilePath.addTrailingPathSeparator
+                (PosixFilePath.joinPath ("/" : FilePath.splitDirectories dir))
+
+
 -- | Construct `FileInfo` from an actual file on the file system.
 --
 -- @since 0.3.3
@@ -28,16 +42,19 @@ getFileInfo fpStr = liftIO $ do
     fs <- Posix.getSymbolicLinkStatus fpStr
     let uid = fromIntegral $ Posix.fileOwner fs
         gid = fromIntegral $ Posix.fileGroup fs
-        fp = encodeFilePath fpStr
-        fpDir = encodeFilePath $ PosixFilePath.addTrailingPathSeparator fpStr
-    (fType, fp', fSize) <-
+        unixifyFile fp =
+            case FilePath.splitFileName fp of
+                (dir, file) -> unixifyDirectory dir PosixFilePath.</> file
+        fpFile = encodeFilePath $ unixifyFile fpStr
+        fpDir = encodeFilePath $ unixifyDirectory fpStr
+    (fType, fpEnc, fSize) <-
         case () of
-            () | Posix.isRegularFile fs     -> return (FTNormal, fp, Posix.fileSize fs)
+            () | Posix.isRegularFile fs     -> return (FTNormal, fpFile, Posix.fileSize fs)
                | Posix.isDirectory fs       -> return (FTDirectory, fpDir, 0)
                | otherwise                  ->
                  throwM $ TarCreationError $ "Unsupported file type: " ++ fpStr
     return FileInfo
-        { filePath      = fp'
+        { filePath      = fpEnc
         , fileUserId    = uid
         , fileUserName  = ""
         , fileGroupId   = gid
