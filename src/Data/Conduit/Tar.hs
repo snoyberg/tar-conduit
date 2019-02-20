@@ -974,7 +974,7 @@ tarFiles mbaseDir mDepth mWithRelTo =
 -- | Given a directory `FileInfo`, will yield all directory strucutre, eg. @"\/foo\/bar\/baz\/"@,
 -- will result in @["\/", "\/foo\/", "\/foo\/bar\/", "\/foo\/bar\/baz\/"]@
 yieldDirectory ::
-       MonadThrow m => FileInfo -> ConduitT i (Either FileInfo b) m ByteString
+       MonadThrow m => FileInfo -> ConduitM i (Either FileInfo b) m ByteString
 yieldDirectory fileInfo =
     case fileType fileInfo of
         FTDirectory ->
