@@ -28,6 +28,7 @@ module Data.Conduit.Tar
     , headerFileType
     , headerFilePath
     , createFTDirectory
+    , getFileInfo
     , normalizeDirectory
       -- ** Creation
     , tarFiles
