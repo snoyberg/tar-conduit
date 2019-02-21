@@ -898,26 +898,26 @@ tarFiles ::
 tarFiles TarFilesConfig {..}
     | maybe False (<= 0) tarFilesDepth = pure tarFilesDirectories
     | otherwise = do
-        basePath <- maybe (pure "") yieldDirectory tarFilesBaseDirectory
+        (baseDirsCreated, basePath) <-
+            maybe
+                (pure (tarFilesDirectories, ""))
+                (yieldBaseDirectory tarFilesDirectories)
+                tarFilesBaseDirectory
         let mPrefix =
-                encodeFilePath .
-                Posix.normalise . Posix.addTrailingPathSeparator <$>
+                encodeFilePath . Posix.normalise . Posix.addTrailingPathSeparator <$>
                 tarFilesRelativeTo
             withoutPrefix dirsCreated fi m =
                 case mPrefix of
                     Nothing -> m fi
                     Just "./" -> m fi
                     Just prefix
-                        | Just relativePath <-
-                             S8.stripPrefix prefix (filePath fi) ->
+                        | Just relativePath <- S8.stripPrefix prefix (filePath fi) ->
                             m fi {filePath = relativePath}
                     _ -> pure dirsCreated
             addBaseDir fi = fi {filePath = basePath <> filePath fi}
             yieldFile dirsCreated fi fi' = do
                 dirsAdded <-
-                    if Set.member
-                           (Posix.takeDirectory (getFileInfoPath fi'))
-                           dirsCreated
+                    if Set.member (Posix.takeDirectory (getFileInfoPath fi')) dirsCreated
                         then pure Set.empty
                         else yield (Posix.takeDirectory (getFileInfoPath fi)) .|
                              go dirsCreated (Just (1 :: Int))
@@ -934,8 +934,7 @@ tarFiles TarFilesConfig {..}
                          go dirsCreated (Just (1 :: Int))
             yieldChildrenDirs mdep dirsCreated fi =
                 if maybe True (> 0) mdep
-                    then sourceDirectory (getFileInfoPath fi) .|
-                         go dirsCreated mdep
+                    then sourceDirectory (getFileInfoPath fi) .| go dirsCreated mdep
                     else pure dirsCreated
             yieldDir mdep dirsCreated fi fi' =
                 let fp' = getFileInfoPath fi'
@@ -944,12 +943,7 @@ tarFiles TarFilesConfig {..}
                         else do
                             parents <- yieldParentDirs dirsCreated fi fp'
                             unless (null fp') $ yield $ Left $ addBaseDir fi'
-                            let withParents =
-                                    Set.unions
-                                        [ dirsCreated
-                                        , parents
-                                        , Set.singleton fp'
-                                        ]
+                            let withParents = Set.unions [dirsCreated, parents, Set.singleton fp']
                             yieldChildrenDirs (pred <$> mdep) withParents fi
             go !dirsCreated !mdep =
                 await >>= \case
@@ -959,52 +953,54 @@ tarFiles TarFilesConfig {..}
                             case fileType fi of
                                 FTNormal ->
                                     withoutPrefix dirsCreated fi $ \fi' -> do
-                                        dirsAdded <-
-                                            yieldFile dirsCreated fi fi'
-                                        sourceFile (getFileInfoPath fi) .|
-                                            mapC Right
+                                        dirsAdded <- yieldFile dirsCreated fi fi'
+                                        sourceFile (getFileInfoPath fi) .| mapC Right
                                         pure dirsAdded
                                 FTSymbolicLink _ ->
-                                    withoutPrefix dirsCreated fi $
-                                    yieldFile dirsCreated fi
+                                    withoutPrefix dirsCreated fi $ yieldFile dirsCreated fi
                                 FTDirectory ->
-                                    withoutPrefix dirsCreated fi $
-                                    yieldDir mdep dirsCreated fi
+                                    withoutPrefix dirsCreated fi $ yieldDir mdep dirsCreated fi
                                 fty -> do
                                     leftover fp
                                     throwM $
                                         TarCreationError $
                                         "<tarFiles>: Unsupported file type: " ++
-                                        show fty ++
-                                        " for file: " ++ getFileInfoPath fi
+                                        show fty ++ " for file: " ++ getFileInfoPath fi
                         go dirsAdded mdep
                     Nothing -> pure dirsCreated
-        go (Set.insert "./" tarFilesDirectories) tarFilesDepth
+        (`Set.difference` Set.fromList ["./", ""]) <$>
+            go (Set.insert "./" baseDirsCreated) tarFilesDepth
 
 
 -- | Given a directory `FileInfo`, will yield all directory strucutre, eg. @"\/foo\/bar\/baz\/"@,
 -- will result in @["\/", "\/foo\/", "\/foo\/bar\/", "\/foo\/bar\/baz\/"]@
-yieldDirectory ::
-       MonadThrow m => FileInfo -> ConduitM i (Either FileInfo b) m ByteString
-yieldDirectory fileInfo =
+yieldBaseDirectory ::
+       MonadThrow m
+    => Set.Set FilePath
+    -> FileInfo
+    -> ConduitM i (Either FileInfo b) m (Set.Set FilePath, ByteString)
+yieldBaseDirectory dirsCreated fileInfo =
     case fileType fileInfo of
         FTDirectory ->
+            fmap encodeFilePath <$>
             case Posix.splitDirectories $ Posix.normalise fp of
                 [] -> throwM $ TarCreationError "<tarFiles>: Base directory name cannot be empty"
                 ("/":xs) -> do
-                    yield $ Left fileInfo {filePath = "/"}
-                    foldlM yieldDirs "/" $ map encodeFilePath xs
-                xs -> foldlM yieldDirs "" $ map encodeFilePath xs
+                    yieldDir "/"
+                    foldlM yieldDirs (Set.insert "/" dirsCreated, "/") xs
+                xs -> foldlM yieldDirs (dirsCreated, "") xs
         ty ->
             throwM $
             TarCreationError $
             "<tarFiles>: Expected FTDirectory. Unsupported type for directory: " <> show ty
   where
     fp = getFileInfoPath fileInfo
-    yieldDirs parent curDirName = do
-        let curPath = parent <> curDirName <> pathSeparatorS
-        yield $ Left fileInfo {filePath = curPath}
-        pure curPath
+    yieldDir dir =
+        unless (Set.member dir dirsCreated) $ yield $ Left fileInfo {filePath = encodeFilePath dir}
+    yieldDirs (dirs, parent) curDirName = do
+        let curPath = parent <> curDirName <> "/"
+        yieldDir curPath
+        pure (Set.insert curPath dirs, curPath)
 
 
 -- | Recursively tar all of the files and directories. There will be no
