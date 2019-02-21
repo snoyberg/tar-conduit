@@ -27,8 +27,8 @@ module Data.Conduit.Tar
       -- * Helper functions
     , headerFileType
     , headerFilePath
-    , getFileInfo
     , createFTDirectory
+    , normalizeDirectory
       -- ** Creation
     , tarFiles
     , tarFilePath
@@ -44,7 +44,7 @@ module Data.Conduit.Tar
 
 import           Conduit                  as C
 import           Control.Exception        (SomeException, assert)
-import           Control.Monad            (unless, void, when)
+import           Control.Monad            (unless, void)
 import           Data.Bits
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as S
@@ -804,7 +804,7 @@ createFTDirectory fp = do
     curTime <- floor <$> liftIO getPOSIXTime
     pure
         FileInfo
-            { filePath = encodeFilePath fp
+            { filePath = encodeFilePath $ normalizeDirectory fp
             , fileUserId = 0
             , fileUserName = ""
             , fileGroupId = 0

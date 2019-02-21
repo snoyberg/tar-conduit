@@ -21,20 +21,22 @@ import qualified System.FilePath          as FilePath
 import qualified System.FilePath.Posix    as PosixFilePath
 
 
--- | Convert a Windows style directory into a Unix-like, while dropping any drive information.
+-- | Convert a Windows style directory into a Unix-like, while dropping any drive information. Adds
+-- trailing forward slash.
 --
 -- @since 0.3.3
-unixifyDirectory :: FilePath -> FilePath
-unixifyDirectory fp =
+normalizeDirectory :: FilePath -> FilePath
+normalizeDirectory fp =
     PosixFilePath.addTrailingPathSeparator $
-    case FilePath.splitDrive fp of
+    case FilePath.splitDrive $ FilePath.normalise fp of
         ("", dir) -> PosixFilePath.joinPath (FilePath.splitDirectories dir)
         (_, dir) ->
             PosixFilePath.addTrailingPathSeparator
                 (PosixFilePath.joinPath ("/" : FilePath.splitDirectories dir))
 
 
--- | Construct `FileInfo` from an actual file on the file system.
+-- | Construct `FileInfo` from an actual file on the file system. The filepath itself will be
+-- adjusted to be Posix compatible.
 --
 -- @since 0.3.3
 getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
@@ -44,9 +46,9 @@ getFileInfo fpStr = liftIO $ do
         gid = fromIntegral $ Posix.fileGroup fs
         unixifyFile fp =
             case FilePath.splitFileName fp of
-                (dir, file) -> unixifyDirectory dir PosixFilePath.</> file
+                (dir, file) -> normalizeDirectory dir PosixFilePath.</> file
         fpFile = encodeFilePath $ unixifyFile fpStr
-        fpDir = encodeFilePath $ unixifyDirectory fpStr
+        fpDir = encodeFilePath $ normalizeDirectory fpStr
     (fType, fpEnc, fSize) <-
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, fpFile, Posix.fileSize fs)
