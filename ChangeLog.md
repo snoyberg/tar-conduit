@@ -1,3 +1,7 @@
+## 0.3.3 - 2019-02-14
+* Exported `getFileInfo`
+* Addition of `tarFiles`, `createFTDirectory` and `normalizeDirectory`
+
 ## 0.3.2 - 2019-01-14
 * Create a prefix directory whenever a directory type entry is missing from the tarball itself. Fixes [#26](https://github.com/snoyberg/tar-conduit/issues/26).
 

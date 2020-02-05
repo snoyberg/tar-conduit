@@ -4,6 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Data.Conduit.Tar.Unix
     ( getFileInfo
+    , normalizeDirectory
     , restoreFileInternal
     ) where
 
@@ -18,11 +19,21 @@ import           Foreign.C.Types               (CTime (..))
 import qualified System.Directory              as Dir
 import qualified System.Posix.Files            as Posix
 import qualified System.Posix.User             as Posix
-import qualified System.FilePath.Posix         as Posix
+import qualified System.FilePath.Posix         as FilePath
 
-getFileInfo :: FilePath -> IO FileInfo
-getFileInfo fpStr = do
-    let fp = encodeFilePath fpStr
+-- | Apply `FilePath.normalise` as well as add a trailing slash to the filepath.
+--
+-- @since 0.3.3
+normalizeDirectory :: FilePath -> FilePath
+normalizeDirectory = FilePath.addTrailingPathSeparator . FilePath.normalise
+
+-- | Construct `FileInfo` from an actual file on the file system.
+--
+-- @since 0.3.3
+getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
+getFileInfo fpStr = liftIO $ do
+    let fp = encodeFilePath $ FilePath.normalise fpStr
+        fpDir = encodeFilePath $ normalizeDirectory fpStr
     fs <- Posix.getSymbolicLinkStatus fpStr
     let uid = Posix.fileOwner fs
         gid = Posix.fileGroup fs
@@ -31,19 +42,20 @@ getFileInfo fpStr = do
     -- Moreover, names are non-critical as they are not used during unarchival process
     euEntry :: Either IOException Posix.UserEntry <- try $ Posix.getUserEntryForID uid
     egEntry :: Either IOException Posix.GroupEntry <- try $ Posix.getGroupEntryForID gid
-    (fType, fSize) <-
+    (fType, fp', fSize) <-
         case () of
-            () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
+            () | Posix.isRegularFile fs     -> return (FTNormal, fp, Posix.fileSize fs)
                | Posix.isSymbolicLink fs    -> do
                      ln <- Posix.readSymbolicLink fpStr
-                     return (FTSymbolicLink (encodeFilePath ln), 0)
-               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, 0)
-               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, 0)
-               | Posix.isDirectory fs       -> return (FTDirectory, 0)
-               | Posix.isNamedPipe fs       -> return (FTFifo, 0)
-               | otherwise                  -> error $ "Unsupported file type: " ++ S8.unpack fp
+                     return (FTSymbolicLink (encodeFilePath ln), fp, 0)
+               | Posix.isCharacterDevice fs -> return (FTCharacterSpecial, fp, 0)
+               | Posix.isBlockDevice fs     -> return (FTBlockSpecial, fp, 0)
+               | Posix.isDirectory fs       -> return (FTDirectory, fpDir, 0)
+               | Posix.isNamedPipe fs       -> return (FTFifo, fp, 0)
+               | otherwise                  ->
+                 throwM $ TarCreationError $ "Unsupported file type: " ++ S8.unpack fp
     return $! FileInfo
-        { filePath      = fp
+        { filePath      = fp'
         , fileUserId    = uid
         , fileUserName  = either (const "") (S8.pack . Posix.userName) euEntry
         , fileGroupId   = gid
@@ -81,7 +93,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
             excs <- liftIO $ do
                 -- Try to unlink any existing file/symlink
                 void $ tryAny $ Posix.removeLink fpStr
-                when lenient $ Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
+                when lenient $ Dir.createDirectoryIfMissing True $ FilePath.takeDirectory fpStr
                 Posix.createSymbolicLink (decodeFilePath link) fpStr
                 eExc1 <- tryAnyCond $ Posix.setSymbolicLinkOwnerAndGroup fpStr fileUserId fileGroupId
 #if MIN_VERSION_unix(2,7,0)
@@ -100,9 +112,9 @@ restoreFileInternal lenient fi@FileInfo {..} = do
                     -- If the linked file does not exist (yet), we cannot create a hard link.
                     -- Try to "pre-create" it.
                     unless linkedFileExists $ do
-                        Dir.createDirectoryIfMissing True $ Posix.takeDirectory linkedFp
+                        Dir.createDirectoryIfMissing True $ FilePath.takeDirectory linkedFp
                         writeFile linkedFp ""
-                Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
+                Dir.createDirectoryIfMissing True $ FilePath.takeDirectory fpStr
                 -- Try to unlink any existing file/hard link
                 void $ tryAny $ Posix.removeLink fpStr
                 Posix.createLink linkedFp fpStr
@@ -112,7 +124,7 @@ restoreFileInternal lenient fi@FileInfo {..} = do
                     return (either ((excs ++) . pure) (const excs) eExc)
             unless (null excs) $ yield (return (fi, excs))
         FTNormal -> do
-            when lenient $ liftIO $ Dir.createDirectoryIfMissing True $ Posix.takeDirectory fpStr
+            when lenient $ liftIO $ Dir.createDirectoryIfMissing True $ FilePath.takeDirectory fpStr
             sinkFile fpStr
             excs <- liftIO $ do
                 excs <- restorePermissions

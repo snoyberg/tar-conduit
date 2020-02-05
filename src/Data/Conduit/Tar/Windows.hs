@@ -2,6 +2,7 @@
 {-# LANGUAGE RecordWildCards   #-}
 module Data.Conduit.Tar.Windows
     ( getFileInfo
+    , unixifyDirectory
     , restoreFileInternal
     ) where
 
@@ -16,21 +17,46 @@ import           Data.Time.Clock.POSIX
 import           Foreign.C.Types          (CTime (..))
 import qualified System.Directory         as Dir
 import qualified System.PosixCompat.Files as Posix
-import qualified System.FilePath as FilePath
+import qualified System.FilePath          as FilePath
+import qualified System.FilePath.Posix    as PosixFilePath
 
 
-getFileInfo :: FilePath -> IO FileInfo
-getFileInfo fp = do
-    fs <- Posix.getSymbolicLinkStatus fp
+-- | Convert a Windows style directory into a Unix-like, while dropping any drive information. Adds
+-- trailing forward slash.
+--
+-- @since 0.3.3
+normalizeDirectory :: FilePath -> FilePath
+normalizeDirectory fp =
+    PosixFilePath.addTrailingPathSeparator $
+    case FilePath.splitDrive $ FilePath.normalise fp of
+        ("", dir) -> PosixFilePath.joinPath (FilePath.splitDirectories dir)
+        (_, dir) ->
+            PosixFilePath.addTrailingPathSeparator
+                (PosixFilePath.joinPath ("/" : FilePath.splitDirectories dir))
+
+
+-- | Construct `FileInfo` from an actual file on the file system. The filepath itself will be
+-- adjusted to be Posix compatible.
+--
+-- @since 0.3.3
+getFileInfo :: (MonadThrow m, MonadIO m) => FilePath -> m FileInfo
+getFileInfo fpStr = liftIO $ do
+    fs <- Posix.getSymbolicLinkStatus fpStr
     let uid = fromIntegral $ Posix.fileOwner fs
         gid = fromIntegral $ Posix.fileGroup fs
-    (fType, fSize) <-
+        unixifyFile fp =
+            case FilePath.splitFileName fp of
+                (dir, file) -> normalizeDirectory dir PosixFilePath.</> file
+        fpFile = encodeFilePath $ unixifyFile fpStr
+        fpDir = encodeFilePath $ normalizeDirectory fpStr
+    (fType, fpEnc, fSize) <-
         case () of
-            () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
-               | Posix.isDirectory fs       -> return (FTDirectory, 0)
-               | otherwise                  -> error $ "Unsupported file type: " ++ fp
+            () | Posix.isRegularFile fs     -> return (FTNormal, fpFile, Posix.fileSize fs)
+               | Posix.isDirectory fs       -> return (FTDirectory, fpDir, 0)
+               | otherwise                  ->
+                 throwM $ TarCreationError $ "Unsupported file type: " ++ fpStr
     return FileInfo
-        { filePath      = encodeFilePath fp
+        { filePath      = fpEnc
         , fileUserId    = uid
         , fileUserName  = ""
         , fileGroupId   = gid

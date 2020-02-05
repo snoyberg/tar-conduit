@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP                        #-}
 #if WINDOWS
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 #endif
@@ -8,6 +8,8 @@ module Data.Conduit.Tar.Types
     , TarChunk(..)
     , TarException(..)
     , TarCreateException(..)
+    , defaultTarFilesConfig
+    , TarFilesConfig(..)
     , FileType(..)
     , FileInfo(..)
     , FileOffset
@@ -25,13 +27,14 @@ module Data.Conduit.Tar.Types
 
 import           Control.Exception        (Exception)
 import           Data.ByteString          (ByteString)
+import qualified Data.ByteString.Char8    as S8
 import           Data.ByteString.Short    (ShortByteString)
+import           Data.Set                 (Set)
+import           Data.Text                as T
+import           Data.Text.Encoding       as T
+import           Data.Text.Encoding.Error as T
 import           Data.Word
 import           System.Posix.Types
-import qualified Data.ByteString.Char8         as S8
-import           Data.Text                     as T
-import           Data.Text.Encoding            as T
-import           Data.Text.Encoding.Error      as T
 #if WINDOWS
 import           Data.Bits
 import           Foreign.Storable
@@ -114,7 +117,26 @@ data Header = Header
     }
     deriving Show
 
+-- | Configuration for the tarball creator `Data.Conduit.Tar.tarFiles`
+data TarFilesConfig = TarFilesConfig
+    { tarFilesBaseDirectory :: !(Maybe FileInfo)
+     -- ^ Base directory where all of the files will be placed in. If `Nothing` files will be placed
+     -- in the root of the tarball. Must be of type `FTDirectory`, otherwise error.
+    , tarFilesDepth         :: !(Maybe Int)
+     -- ^ How deep to recurse into the supplied directories, with `Nothing` being as deep as
+     -- possible.
+    , tarFilesRelativeTo    :: !(Maybe FilePath)
+     -- ^ With respect to which directory to add files, i.e. this prefix path will be stripped from
+     -- all added files. By default it will do no stripping (even absolute paths will be stored with
+     -- leading slash: @/@).
+    , tarFilesDirectories   :: !(Set FilePath)
+    -- ^ Folder names (must have trailing slash), that have already been added to the tarball. Use this
+    -- to prevent duplicate directories from being created on subsequent calls to
+    -- `Data.Conduit.Tar.tarFiles`.
+    } deriving (Show)
 
+defaultTarFilesConfig :: TarFilesConfig
+defaultTarFilesConfig = TarFilesConfig Nothing Nothing Nothing mempty
 
 data TarChunk
     = ChunkHeader Header
@@ -122,7 +144,7 @@ data TarChunk
     | ChunkException TarException
     deriving Show
 
--- | This the the exception type that is used in this module.
+-- | This is the exception type that is used in this package.
 --
 -- More constructors are susceptible to be added without bumping the major
 -- version of this module.
