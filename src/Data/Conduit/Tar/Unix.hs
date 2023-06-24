@@ -19,6 +19,9 @@ import qualified System.Directory              as Dir
 import qualified System.Posix.Files            as Posix
 import qualified System.Posix.User             as Posix
 import qualified System.FilePath.Posix         as Posix
+#if MIN_VERSION_unix(2,8,0)
+import qualified System.Posix.User.ByteString as UBS
+#endif
 
 getFileInfo :: FilePath -> IO FileInfo
 getFileInfo fpStr = do
@@ -29,8 +32,19 @@ getFileInfo fpStr = do
     -- Allow for username/group retrieval failure, especially useful for non-tty environment.
     -- Workaround for: https://ghc.haskell.org/trac/ghc/ticket/1487
     -- Moreover, names are non-critical as they are not used during unarchival process
+#if MIN_VERSION_unix(2,8,0)
+    euEntry :: Either IOException UBS.UserEntry <- try $ Posix.getUserEntryForID uid
+    egEntry :: Either IOException UBS.GroupEntry <- try $ Posix.getGroupEntryForID gid
+    let
+      fileUserName = either (const "") UBS.userName euEntry
+      fileGroupName = either (const "") UBS.groupName egEntry
+#else
     euEntry :: Either IOException Posix.UserEntry <- try $ Posix.getUserEntryForID uid
     egEntry :: Either IOException Posix.GroupEntry <- try $ Posix.getGroupEntryForID gid
+    let
+      fileUserName = either (const "") (S8.pack . Posix.userName) euEntry
+      fileGroupName = either (const "") (S8.pack . Posix.groupName) egEntry
+#endif
     (fType, fSize) <-
         case () of
             () | Posix.isRegularFile fs     -> return (FTNormal, Posix.fileSize fs)
@@ -45,9 +59,9 @@ getFileInfo fpStr = do
     return $! FileInfo
         { filePath      = fp
         , fileUserId    = uid
-        , fileUserName  = either (const "") (S8.pack . Posix.userName) euEntry
+        , fileUserName  = fileUserName
         , fileGroupId   = gid
-        , fileGroupName = either (const "") (S8.pack . Posix.groupName) egEntry
+        , fileGroupName = fileGroupName
         , fileMode      = Posix.fileMode fs .&. 0o7777
         , fileSize      = fSize
         , fileType      = fType
