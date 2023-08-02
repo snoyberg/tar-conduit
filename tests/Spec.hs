@@ -10,6 +10,7 @@ import           Control.Exception
 import           Control.Monad         (void, when, zipWithM_)
 import           Data.ByteString       as S
 import           Data.ByteString.Char8 as S8
+import           Data.ByteString.Short (fromShort)
 import           Data.Conduit.List
 import           Data.Conduit.Tar
 import           Data.Int
@@ -85,6 +86,7 @@ main = do
                     collectContent (outDir Posix.</> "dir/subdir/") `shouldReturn` "Hello World\n"
         describe "ustar" ustarSpec
         describe "GNUtar" gnutarSpec
+        describe "pax" paxSpec
         describe "unsupported headers" $ do
             it "associated payload is discarded" $ do
               contents <- readGzipTarball "./tests/files/libpq-0.3.tar.gz"
@@ -289,3 +291,100 @@ collectContent :: FilePath -> IO (ByteString)
 collectContent dir =
     runConduitRes $
     sourceDirectoryDeep False dir .| mapMC (\fp -> runConduit (sourceFileBS fp .| foldC)) .| foldC
+
+-- | This test uses untar to process a simple example in the pax interchange
+-- format.
+paxSpec :: Spec
+paxSpec = do
+    it "untarChunksRaw, pax interchange format" $ do
+        res <- runConduitRes $
+               paxExample
+            .| untarChunksRaw
+            .| processTarChunks
+            .| sinkList
+        pure res `shouldReturn`
+            [ "/pax-global-header"
+            , "payload: 19 comment=Example\n"
+            , "/pax-extended-header"
+            , "payload: 17 path=filepath\n"
+            , "original-dir/original-filepath"
+            , "payload: payload"
+            ]
+    it "untar, pax interchange format" $ do
+        res <- runConduitRes $
+               paxExample
+            .| untar process
+            .| sinkList
+        pure res `shouldReturn` [("filepath", "payload")]
+    it "untarRaw, pax interchange format" $ do
+        res <- runConduitRes $
+               paxExample
+            .| untarRaw process
+            .| sinkList
+        pure res `shouldReturn` [("original-dir/original-filepath", "payload")]
+  where
+    process fi = awaitForever $ \bs -> yield (filePath fi, bs)
+    processTarChunks = awaitForever $ \tc -> yield $ case tc of
+        ChunkHeader h -> fromShort $
+            headerFileNamePrefix h <> "/" <> headerFileNameSuffix h
+        ChunkPayload _ bs -> "payload: " <> bs
+        ChunkException e -> "exception: " <> S8.pack (show e)
+
+-- | Produces a simple example in the pax interchange format. It has a pax
+-- \'global\' header block providing a comment, a pax \'next\' header block
+-- providing a path (@\"filepath\"@), and a normal file with filepath
+-- @\"original-filepath\"@ and payload @\"payload\".
+paxExample :: MonadThrow m => ConduitM a ByteString m ()
+paxExample = void $
+       yieldMany
+           [ Left globalHeader
+           , Right globalPayload
+           , Left extendedHeader
+           , Right extendedPayload
+           , Left ustarHeader
+           , Right ustarPayload
+           ]
+    .| void tarEntries
+  where
+    defaultHeader :: FileOffset -> Header
+    defaultHeader offset = Header
+        { headerOffset = offset
+        , headerPayloadOffset = offset + 512
+        , headerFileNameSuffix = mempty
+        , headerFileMode = 0o666
+        , headerOwnerId = 0x0
+        , headerGroupId = 0x0
+        , headerPayloadSize = 0x0
+        , headerTime = 0x0
+        , headerLinkIndicator = 0x0
+        , headerLinkName = mempty
+        , headerMagicVersion = "ustar"
+        , headerOwnerName = "root"
+        , headerGroupName = "root"
+        , headerDeviceMajor = 0x0
+        , headerDeviceMinor = 0x0
+        , headerFileNamePrefix = mempty
+        }
+    nextOffset :: Header -> FileOffset
+    nextOffset h = headerPayloadOffset h + ((headerPayloadSize h + 512) `div` 512)
+    globalHeader = (defaultHeader 0x0)
+        { headerFileNameSuffix = "pax-global-header"
+        , headerPayloadSize = fromIntegral $ S.length globalPayload
+        , headerLinkIndicator = 0x67 -- UTF-8 'g'
+        }
+    globalPayload = "19 comment=Example\n"
+    extendedHeader = (defaultHeader $ nextOffset globalHeader)
+        { headerFileNameSuffix = "pax-extended-header"
+        , headerPayloadSize = fromIntegral $ S.length extendedPayload
+        , headerLinkIndicator = 0x78 -- UTF-8 'x'
+        }
+    -- The path in the pax extended header should override the filepath
+    -- specified in the ustar header.
+    extendedPayload = "17 path=filepath\n"
+    ustarHeader = (defaultHeader $ nextOffset extendedHeader)
+        { headerFileNameSuffix = "original-filepath"
+        , headerPayloadSize = fromIntegral $ S.length ustarPayload
+        , headerLinkIndicator = 0x30 -- UTF-8 '0'
+        , headerFileNamePrefix = "original-dir"
+        }
+    ustarPayload = "payload"
