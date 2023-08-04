@@ -1,0 +1,2 @@
+# A snapshot specification for GHC 9.2.8.
+resolver: lts-20.26 # GHC 9.2.8
