@@ -38,10 +38,21 @@ main = do
     let baseTmp = "tar-conduit-tests"
     isStack <- doesDirectoryExist ".stack-work"
     let testPaths =
-            ["src", "./tests", "README.md", "ChangeLog.md", "LICENSE"] ++
-            if isStack
-                then [".stack-work"]
-                else []
+               ["src", "README.md", "ChangeLog.md", "LICENSE"]
+#ifndef WINDOWS
+            <> ["./tests"]
+               -- On Windows, the 'stack test' command results in error message:
+               --
+               --   uncaught exception: IOException of type PermissionDenied
+               --   System.Win32File.read: permission denied (Permission denied)
+               --
+               -- if '.stack-work' is included in the test paths.
+            <> [".stack-work" | isStack]
+#else
+               -- The package does not support symlinks on Windows. See
+               -- Data.Conduit.Tar.Windows.getFileInfo.
+            <> ["./tests/files"]
+#endif
     hspec $ do
         describe "tar/untar" $ do
             let tarUntarContent dir =
