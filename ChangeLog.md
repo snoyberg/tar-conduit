@@ -1,4 +1,6 @@
-## 0.4.0 - YYYY-MM-DD
+# ChangeLog for tar-conduit
+
+## 0.4.0 - 2023-08-07
 
 * `untarChunks` and `untar` now provide partial support for the pax interchange
   format, by applying pax header blocks and certain keywords in pax extended
