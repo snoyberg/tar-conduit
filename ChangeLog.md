@@ -1,3 +1,10 @@
+## 0.4.0 - YYYY-MM-DD
+
+* `untarChunks` and `untar` now provide partial support for the pax interchange
+  format, by applying pax header blocks and certain keywords in pax extended
+  headers. Exposes `applyPaxChunkHeaders`. Also exposes `untarChunksRaw` and
+  `untarRaw`, which do not apply pax header blocks and extended headers.
+
 ## 0.3.2.1 - 2023-06-25
 
 * `unix-2.8` compatibility [#32](https://github.com/snoyberg/tar-conduit/pull/32)
@@ -61,4 +68,3 @@
 ## 0.1.0 - 2016-11-03
 
  * Initial release
-

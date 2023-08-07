@@ -13,6 +13,7 @@ module Data.Conduit.Tar
       tar
     , tarEntries
     , untar
+    , untarRaw
     , untarWithFinalizers
     , untarWithExceptions
     , restoreFile
@@ -21,6 +22,8 @@ module Data.Conduit.Tar
     , restoreFileWithErrors
     -- ** Operate on Chunks
     , untarChunks
+    , untarChunksRaw
+    , applyPaxChunkHeaders
     , withEntry
     , withEntries
     , withFileInfo
@@ -42,6 +45,7 @@ module Data.Conduit.Tar
 import           Conduit                  as C
 import           Control.Exception        (assert, SomeException)
 import           Control.Monad            (unless, void)
+import           Control.Monad.State.Lazy (StateT, get, put)
 import           Data.Bits
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as S
@@ -52,7 +56,9 @@ import           Data.ByteString.Short    (ShortByteString, fromShort, toShort)
 import qualified Data.ByteString.Short    as SS
 import qualified Data.ByteString.Unsafe   as BU
 import           Data.Foldable            (foldr')
+import qualified Data.Map                 as Map
 import           Data.Monoid              ((<>), mempty)
+import           Data.Word                (Word8)
 import           Foreign.C.Types          (CTime (..))
 import           Foreign.Storable
 import           System.Directory         (createDirectoryIfMissing,
@@ -147,28 +153,47 @@ parseHeader offset bs = do
                           else getOctal off len
 
     parseOctal :: Integral i => ByteString -> i
-    parseOctal = S.foldl' (\t c -> t * 8 + fromIntegral (c - zero)) 0
+    parseOctal = parseBase 8
                . S.takeWhile (\c -> zero <= c && c <= seven)
                . S.dropWhile (== space)
 
-    space :: Integral i => i
-    space = 0x20
-    zero = 48
     seven = 55
+
+parseBase :: Integral i => i -> ByteString -> i
+parseBase n = S.foldl' (\t c -> t * n + fromIntegral (c - zero)) 0
+
+space :: Integral i => i
+space = 0x20 -- UTF-8 ' '
+
+zero :: Word8
+zero = 0x30 -- UTF-8 '0'
 
 -- | Make sure we don't use more bytes than we can fit in the data type.
 fromHex :: forall a . (Storable a, Bits a, Integral a) => ByteString -> a
 fromHex str = S.foldl' (\ acc x -> (acc `shiftL` 8) .|. fromIntegral x) 0 $
               S.drop (max 0 (S.length str - sizeOf (undefined :: a))) str
 
-
-
--- | Convert a stream of raw bytes into a stream of 'TarChunk's. This stream can further be passed
--- into `withFileInfo` or `withHeaders` functions.
+-- | Convert a stream of raw bytes into a stream of 'TarChunk's, after applying
+-- any pax header blocks and extended headers. This stream can further be passed
+-- into 'withFileInfo' or 'withHeaders' functions. Only the \'comment\',
+-- \'gid\', \'gname\', \'linkpath\', \'path\', \'size\', \'uid\' and \'uname\'
+--  pax keywords are supported. For a component that produces unprocessed
+-- 'TarChunk's, see 'untarChunksRaw'.
 --
 -- @since 0.2.1
 untarChunks :: Monad m => ConduitM ByteString TarChunk m ()
 untarChunks =
+       untarChunksRaw
+    .| evalStateLC initialPaxState applyPaxChunkHeaders
+
+-- | Convert a stream of raw bytes into a stream of raw 'TarChunk's. This stream
+-- can further be passed into `withFileInfo` or `withHeaders` functions. For a
+-- component that further processes raw 'TarChunk's to apply pax header blocks
+-- and extended headers, see 'untarChunk'.
+--
+-- @since 0.3.3
+untarChunksRaw :: Monad m => ConduitM ByteString TarChunk m ()
+untarChunksRaw =
     loop 0
   where
     loop !offset = assert (offset `mod` 512 == 0) $ do
@@ -381,9 +406,10 @@ handleGnuTarHeader h =
             return Nothing
         _ -> return Nothing
 
-
-
--- | Just like `withFileInfo`, but works directly on the stream of bytes.
+-- | Just like 'withFileInfo', but works directly on the stream of bytes.
+-- Applies pax header blocks and extended headers. However, only the
+-- \'comment\', \'gid\', \'gname\', \'linkpath\', \'path\', \'size\', \'uid\'
+-- and \'uname\' pax keywords are supported.
 --
 -- @since 0.2.0
 untar :: MonadThrow m
@@ -391,6 +417,136 @@ untar :: MonadThrow m
       -> ConduitM ByteString o m ()
 untar inner = untarChunks .| withFileInfo inner
 
+-- | Like 'untar' but does not apply pax header blocks and extended headers.
+--
+-- @since 0.3.3
+untarRaw ::
+       MonadThrow m
+    => (FileInfo -> ConduitM ByteString o m ())
+    -> ConduitM ByteString o m ()
+untarRaw inner = untarChunksRaw .| withFileInfo inner
+
+-- | Applies tar chunks that are pax header blocks and extended headers to the
+-- tar chunks that follow. However, only the \'comment\', \'gid\', \'gname\',
+-- \'linkpath\', \'path\', \'size\', \'uid\' and \'uname\' pax keywords are
+-- supported.
+applyPaxChunkHeaders ::
+       Monad m
+    => ConduitM TarChunk TarChunk (StateT PaxState m) ()
+applyPaxChunkHeaders = awaitForever $ \i -> do
+    state@(PaxState g x) <- lift get
+    let updateState f = do
+            p <- parsePax
+            lift $ put $ f p state
+    case i of
+        ChunkHeader h -> case headerLinkIndicator h of
+            -- 'g' typeflag unique to pax header block
+            0x67 -> updateState updateGlobal
+            -- 'x' typeflag unique to pax header block
+            0x78 -> updateState updateNext
+            -- All other typeflag
+            _ -> do
+                yield $ ChunkHeader $ applyPax (Map.union x g) h
+                lift $ put $ clearNext state
+        _ -> yield i
+ where
+    updateGlobal p (PaxState g x) = PaxState (Map.union p g) x
+    updateNext p (PaxState g _) = PaxState g p
+    clearNext = updateNext mempty
+
+-- | Only the \'comment\', \'gid\', \'gname\', \'linkpath\',\'path\', \'size\',
+-- \'uid\' and \'uname\' pax keywords are supported.
+applyPax :: PaxHeader -> Header -> Header
+applyPax p h =
+      updateGid
+    $ updateGname
+    $ updateLinkpath
+    $ updatePath
+    $ updateSize
+    $ updateUid
+    $ updateUname h
+  where
+    update ::
+           ByteString
+        -> (ByteString -> Header -> Header)
+        -> (Header -> Header)
+    update k f = maybe id f (Map.lookup k p)
+    ifValueDecimal ::
+           Integral i
+        => (i -> Header -> Header)
+        -> ByteString
+        -> (Header -> Header)
+    ifValueDecimal f v = if S.all isDecimal v
+        then f (parseDecimal v)
+        else id
+    -- There is no 'updateComment' because comments are ignored.
+    updateGid = update "gid" $ ifValueDecimal $ \v h' -> h'
+        { headerGroupId = v }
+    updateGname = update "gname" $ \v h' -> h' { headerGroupName = toShort v }
+    updateLinkpath =
+        update "linkpath" $ \v h' -> h' { headerLinkName = toShort v }
+    updatePath = update "path" $ \v h' -> h'
+        { headerFileNameSuffix = toShort v, headerFileNamePrefix = mempty }
+    updateSize = update "size" $ ifValueDecimal $ \v h' -> h'
+        { headerPayloadSize = v }
+    updateUid = update "uid" $ ifValueDecimal $ \v h' -> h'
+        { headerOwnerId = v }
+    updateUname = update "uname" $ \v h' -> h' { headerOwnerName = toShort v }
+
+parsePax :: Monad m => ConduitM TarChunk TarChunk (StateT PaxState m) PaxHeader
+parsePax = await >>= \case
+    Just (ChunkPayload _ b) -> pure $ paxParser b
+    _ -> pure mempty
+
+-- | A pax extended header comprises one or more records. If the pax extended
+-- header is empty or does not parse, yields an empty 'Pax'.
+paxParser :: ByteString -> PaxHeader
+paxParser b
+    -- This is an error case.
+    | S.null b = mempty
+paxParser b = paxParser' [] b
+  where
+    paxParser' :: [(ByteString, ByteString)] -> ByteString -> PaxHeader
+    paxParser' l b0
+        | S.null b0 = Map.fromList l
+    paxParser' l b0 =
+        maybe mempty (\(pair, b1) -> paxParser' (pair:l) b1) (recordParser b0)
+
+-- | A record in a pax extended header has format:
+--
+-- "%d %s=%s\n", <length>, <keyword>, <value>
+--
+-- If the record does not parse @(<keyword>, <value>)@, yields 'Nothing'.
+recordParser :: ByteString -> Maybe ((ByteString, ByteString), ByteString)
+recordParser b0 = do
+    let (nb, b1) = S.span isDecimal b0
+    n <- toMaybe (not $ S.null nb) (parseDecimal nb)
+    b2 <- skip isSpace b1
+    let (k, b3) = S.span (not . isEquals) b2
+    b4 <- skip isEquals b3
+    let (v, b5) = S.splitAt (n - S.length nb - S.length k - 3) b4
+    b6 <- skip isNewline b5
+    Just ((k, v), b6)
+  where
+    newline = 0x0a -- UTF-8 '\n'
+    equals = 0x3d -- UTF-8 '='
+    toMaybe :: Bool -> a -> Maybe a
+    toMaybe False _ = Nothing
+    toMaybe True x = Just x
+    skip p b = do
+        (w, b') <- S.uncons b
+        if p w then Just b' else Nothing
+    isSpace = (space ==)
+    isEquals = (equals ==)
+    isNewline = (newline ==)
+
+parseDecimal :: Integral i => ByteString -> i
+parseDecimal = parseBase 10
+
+isDecimal :: Word8 -> Bool
+isDecimal w = w >= zero && w <= nine
+  where
+    nine = 0x39 -- UTF-8 '9'
 
 -- | Just like `untar`, except that each `FileInfo` handling function can produce a finalizing
 -- action, all of which will be executed after the whole tarball has been processed in the opposite

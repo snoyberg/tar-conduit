@@ -5,6 +5,9 @@
 -- | Module contains all the types necessary for tarball processing.
 module Data.Conduit.Tar.Types
     ( Header(..)
+    , PaxHeader
+    , PaxState (..)
+    , initialPaxState
     , TarChunk(..)
     , TarException(..)
     , TarCreateException(..)
@@ -29,6 +32,7 @@ import           Data.ByteString.Short    (ShortByteString)
 import           Data.Word
 import           System.Posix.Types
 import qualified Data.ByteString.Char8         as S8
+import           Data.Map                 (Map)
 import           Data.Text                     as T
 import           Data.Text.Encoding            as T
 import           Data.Text.Encoding.Error      as T
@@ -114,7 +118,15 @@ data Header = Header
     }
     deriving Show
 
+-- | Type synonym representing a pax extended header.
+type PaxHeader = Map ByteString ByteString
 
+-- | Type representing states (global, next file) given pax extended headers.
+data PaxState = PaxState PaxHeader PaxHeader
+
+-- | The initial state before applying any pax extended headers.
+initialPaxState :: PaxState
+initialPaxState = PaxState mempty mempty
 
 data TarChunk
     = ChunkHeader Header
