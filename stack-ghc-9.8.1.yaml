@@ -1,0 +1,2 @@
+# A snapshot specification for GHC 9.8.1.
+resolver: nightly-2024-01-04 # GHC 9.8.1
