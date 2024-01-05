@@ -1,5 +1,10 @@
 # ChangeLog for tar-conduit
 
+## 0.4.1 - 2024-01-06
+
+* Fix bug in the parsing of pax extended header data when provided in more than
+  one sequential chunk [#37](https://github.com/snoyberg/tar-conduit/issues/37)
+
 ## 0.4.0 - 2023-08-07
 
 * `untarChunks` and `untar` now provide partial support for the pax interchange
