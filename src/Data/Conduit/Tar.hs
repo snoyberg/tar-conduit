@@ -57,7 +57,12 @@ import qualified Data.ByteString.Short    as SS
 import qualified Data.ByteString.Unsafe   as BU
 import           Data.Foldable            (foldr')
 import qualified Data.Map                 as Map
-import           Data.Monoid              ((<>), mempty)
+#if !MIN_VERSION_base(4,11,0)
+import           Data.Monoid              ((<>))
+#endif
+#if !MIN_VERSION_base(4,8,0)
+import           Data.Monoid              (mempty)
+#endif
 import           Data.Word                (Word8)
 import           Foreign.C.Types          (CTime (..))
 import           Foreign.Storable
