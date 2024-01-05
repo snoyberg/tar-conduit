@@ -7,9 +7,10 @@ module Main where
 
 import           Conduit
 import           Control.Exception
-import           Control.Monad         (void, when, zipWithM_)
+import           Control.Monad         (forM_, void, when, zipWithM_)
 import           Data.ByteString       as S
 import           Data.ByteString.Char8 as S8
+import qualified Data.ByteString.Lazy.Char8 as LS8
 import           Data.ByteString.Short (fromShort)
 import           Data.Conduit.List
 import           Data.Conduit.Tar
@@ -295,10 +296,11 @@ collectContent dir =
 -- | This test uses untar to process a simple example in the pax interchange
 -- format.
 paxSpec :: Spec
-paxSpec = do
+paxSpec = assert payloadSizeCheck $ do
     it "untarChunksRaw, pax interchange format" $ do
         res <- runConduitRes $
                paxExample
+            .| chopEvery bigChopSize
             .| untarChunksRaw
             .| processTarChunks
             .| sinkList
@@ -306,22 +308,31 @@ paxSpec = do
             [ "/pax-global-header"
             , "payload: 19 comment=Example\n"
             , "/pax-extended-header"
-            , "payload: 17 path=filepath\n"
+            , "payload: " <> bigPayload1
+            , "payload: " <> bigPayload2
             , "original-dir/original-filepath"
-            , "payload: payload"
+            , "payload: " <> smallPayload
             ]
     it "untar, pax interchange format" $ do
         res <- runConduitRes $
                paxExample
+            .| chopEvery smallChopSize
             .| untar process
             .| sinkList
-        pure res `shouldReturn` [("filepath", "payload")]
+        pure res `shouldReturn`
+            [ (veryLongFilepath, smallPayload1)
+            , (veryLongFilepath, smallPayload2)
+            ]
     it "untarRaw, pax interchange format" $ do
         res <- runConduitRes $
                paxExample
+            .| chopEvery smallChopSize
             .| untarRaw process
             .| sinkList
-        pure res `shouldReturn` [("original-dir/original-filepath", "payload")]
+        pure res `shouldReturn`
+            [ ("original-dir/original-filepath", smallPayload1)
+            , ("original-dir/original-filepath", smallPayload2)
+            ]
   where
     process fi = awaitForever $ \bs -> yield (filePath fi, bs)
     processTarChunks = awaitForever $ \tc -> yield $ case tc of
@@ -329,11 +340,31 @@ paxSpec = do
             headerFileNamePrefix h <> "/" <> headerFileNameSuffix h
         ChunkPayload _ bs -> "payload: " <> bs
         ChunkException e -> "exception: " <> S8.pack (show e)
+    chopEvery :: (MonadIO m) => Int -> ConduitT ByteString ByteString m ()
+    chopEvery n = chop
+      where
+        chop = await >>= \case
+            Nothing -> pure ()
+            Just val -> do
+                forM_ (split (S.unpack val)) $ \chunk -> yield (S.pack chunk)
+                chop
+        split = P.takeWhile (not . P.null)
+              . P.map (P.take n)
+              . P.iterate (P.drop n)
+    bigChopSize = 512
+    (bigPayload1, bigPayload2) = S.splitAt bigChopSize veryLongFilepathRecord
+    smallChopSize = 4
+    (smallPayload1, smallPayload2) = S.splitAt smallChopSize smallPayload
+    moreThanHalf s l = l > s && l <= 2 * s
+    payloadSizeCheck =
+           moreThanHalf bigChopSize (S.length veryLongFilepathRecord)
+        && moreThanHalf smallChopSize (S.length smallPayload)
+
 
 -- | Produces a simple example in the pax interchange format. It has a pax
 -- \'global\' header block providing a comment, a pax \'next\' header block
--- providing a path (@\"filepath\"@), and a normal file with filepath
--- @\"original-filepath\"@ and payload @\"payload\".
+-- providing a very long path (@\"very\very\...\very\long\filepath\"@), and a
+-- normal file with filepath @\"original-filepath\"@ and payload @\"payload\".
 paxExample :: MonadThrow m => ConduitM a ByteString m ()
 paxExample = void $
        yieldMany
@@ -366,7 +397,9 @@ paxExample = void $
         , headerFileNamePrefix = mempty
         }
     nextOffset :: Header -> FileOffset
-    nextOffset h = headerPayloadOffset h + ((headerPayloadSize h + 512) `div` 512)
+    nextOffset h =
+        let payloadRecordCount = (headerPayloadSize h + 511) `div` 512
+        in  headerPayloadOffset h + 512 + payloadRecordCount * 512
     globalHeader = (defaultHeader 0x0)
         { headerFileNameSuffix = "pax-global-header"
         , headerPayloadSize = fromIntegral $ S.length globalPayload
@@ -380,11 +413,24 @@ paxExample = void $
         }
     -- The path in the pax extended header should override the filepath
     -- specified in the ustar header.
-    extendedPayload = "17 path=filepath\n"
+    extendedPayload = veryLongFilepathRecord
     ustarHeader = (defaultHeader $ nextOffset extendedHeader)
         { headerFileNameSuffix = "original-filepath"
         , headerPayloadSize = fromIntegral $ S.length ustarPayload
         , headerLinkIndicator = 0x30 -- UTF-8 '0'
         , headerFileNamePrefix = "original-dir"
         }
-    ustarPayload = "payload"
+    ustarPayload = smallPayload
+
+-- | A very/very/.../very/long/filepath with 653 bytes.
+veryLongFilepath :: ByteString
+veryLongFilepath =
+    S8.toStrict (LS8.take 640 $ LS8.cycle "very/") <> "long/filepath"
+
+-- | A very, very, ..., very, long filepath record with 663 bytes.
+veryLongFilepathRecord :: ByteString
+veryLongFilepathRecord = "663 path=" <> veryLongFilepath <> "\n"
+
+-- | A small payload.
+smallPayload :: ByteString
+smallPayload = "payload"
