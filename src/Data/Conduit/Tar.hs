@@ -57,7 +57,12 @@ import qualified Data.ByteString.Short    as SS
 import qualified Data.ByteString.Unsafe   as BU
 import           Data.Foldable            (foldr')
 import qualified Data.Map                 as Map
-import           Data.Monoid              ((<>), mempty)
+#if !MIN_VERSION_base(4,11,0)
+import           Data.Monoid              ((<>))
+#endif
+#if !MIN_VERSION_base(4,8,0)
+import           Data.Monoid              (mempty)
+#endif
 import           Data.Word                (Word8)
 import           Foreign.C.Types          (CTime (..))
 import           Foreign.Storable
@@ -494,9 +499,24 @@ applyPax p h =
     updateUname = update "uname" $ \v h' -> h' { headerOwnerName = toShort v }
 
 parsePax :: Monad m => ConduitM TarChunk TarChunk (StateT PaxState m) PaxHeader
-parsePax = await >>= \case
-    Just (ChunkPayload _ b) -> pure $ paxParser b
-    _ -> pure mempty
+parsePax = paxParser <$> combineChunkPayloads mempty
+ where
+  combineChunkPayloads bs = await >>= \case
+    Nothing -> pure bs
+    Just (ChunkPayload _ b) ->
+      -- This uses <> (Data.ByteString.Internal.Type.append) rather than, say,
+      -- [ByteString] (created in reverse order) and
+      -- Data.ByteString.Internal.Type.concat on the reverse of the list. The
+      -- reason for doing so is an expectation that, in practice, the pax
+      -- extended header data will be received as a single chunk in the very
+      -- great majority of cases and, when it is not, in the great majority of
+      -- remaining cases it will be received as two sequential chunks. This is
+      -- optimised for that expectation, rather than the receipt of the data in
+      -- a large number of small chunks.
+      combineChunkPayloads $ bs <> b
+    Just other -> do
+      leftover other
+      pure bs
 
 -- | A pax extended header comprises one or more records. If the pax extended
 -- header is empty or does not parse, yields an empty 'Pax'.
